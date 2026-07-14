@@ -28,6 +28,13 @@ from binary_agent.adjudication_certificates import (
     C_HTML_ESCAPE_RULE,
     C_JAIL_ARGV_RULE,
     C_READ_TERMINATOR_RULE,
+    C_TYPED_LINK_STORE_RULE,
+    C_BOUNDED_WRAPPER_READ_RULE,
+    C_MASKED_RING_INDEX_RULE,
+    C_TRAILING_ESCAPE_RULE,
+    C_MACRO_TYPED_MEMBER_RULE,
+    C_BOUNDED_TYPED_BYTE_STORE_RULE,
+    C_STRUCT_OUTPUT_INIT_RULE,
     C_FIXED_PATH_EFFECT_RULE,
     C_RETURNED_ALLOCATION_RULE,
     C_COLLECTION_CLEANUP_RULE,
@@ -701,6 +708,43 @@ def _decision_for_certificate(
         rationale = (
             "The exact terminator STORE uses a positive read count bounded by the N-1 request, "
             "so its one-byte write remains within the N-byte local array."
+        )
+    elif rule_id == C_TYPED_LINK_STORE_RULE:
+        rationale = (
+            "The exact pointer-width STORE updates a pointer-to-pointer cursor initialized to a "
+            "typed head field and advanced only to same-type next fields."
+        )
+    elif rule_id == C_BOUNDED_WRAPPER_READ_RULE:
+        rationale = (
+            "The pinned read wrapper returns no more than its capacity-minus-one request, and the "
+            "exact one-byte terminator STORE occurs only on its nonnegative result path."
+        )
+    elif rule_id == C_MASKED_RING_INDEX_RULE:
+        rationale = (
+            "The exact pointer STORE uses a static-zero index whose only update masks it into the "
+            "declared power-of-two array range."
+        )
+    elif rule_id == C_TRAILING_ESCAPE_RULE:
+        rationale = (
+            "The odd trailing-escape branch implies a positive string length, and both allocation "
+            "paths retain at least that complete string before the exact length-minus-one STORE."
+        )
+    elif rule_id == C_MACRO_TYPED_MEMBER_RULE:
+        rationale = (
+            "The exact STORE's source macro expands to a declared struct member; its fixed-width "
+            "scalar or constant in-range pointer-array element fully contains the write."
+        )
+    elif rule_id == C_BOUNDED_TYPED_BYTE_STORE_RULE:
+        rationale = (
+            "The exact one-byte STORE indexes a fixed array member through its typed pointer; "
+            "zero initialization and the only loop increment guard keep that byte index within "
+            "the declared member capacity."
+        )
+    elif rule_id == C_STRUCT_OUTPUT_INIT_RULE:
+        rationale = (
+            "A dominating exact call passes the containing stack object to a typed output "
+            "parameter whose first unconditional action zeroes the complete compiled struct; "
+            "the selected later CALL therefore cannot consume uninitialized bytes."
         )
     elif rule_id == C_GUARDED_FIXED_ARRAY_RULE:
         rationale = (

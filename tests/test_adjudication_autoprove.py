@@ -878,6 +878,374 @@ def test_vla_capacity_source_proof_is_admitted(tmp_path: Path, monkeypatch: pyte
     assert finalize_campaign(root).ledger_path.is_file()
 
 
+def test_typed_link_cursor_store_is_certified(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_text = (
+        "typedef struct CronFile {\n"
+        "    struct CronLine *cf_lines;\n"
+        "} CronFile;\n"
+        "typedef struct CronLine {\n"
+        "    struct CronLine *cl_next;\n"
+        "} CronLine;\n"
+        "static void delete_cronfile(CronFile *file)\n"
+        "{\n"
+        "    CronLine **pline = &file->cf_lines;\n"
+        "    CronLine *line;\n"
+        "    while ((line = *pline) != NULL) {\n"
+        "        if (line->keep)\n"
+        "            pline = &line->cl_next;\n"
+        "        else\n"
+        "            *pline = line->cl_next;\n"
+        "    }\n"
+        "}\n"
+    )
+    root = _prepare_source_rule_campaign(
+        tmp_path,
+        monkeypatch,
+        candidate_id="candidate-typed-link",
+        source_relative="miscutils/crond.c",
+        source_text=source_text,
+        function="delete_cronfile",
+        source_line=15,
+        write_width=8,
+    )
+
+    result = run_autoprove(root)
+
+    assert result.proven_candidates == 1
+    assert json.loads(result.summary_path.read_text())["counts_by_rule"] == {
+        "c_typed_link_pointer_store_v1": 1
+    }
+    assert check_all_certificates(root)["checked_certificate_count"] == 1
+
+
+def test_bounded_wrapper_read_terminator_is_certified(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_text = (
+        "#define filedata bb_common_bufsiz1\n"
+        "static int read_file(const char *name)\n"
+        "{\n"
+        "    int n = open_read_close(name, filedata, COMMON_BUFSIZE - 1);\n"
+        "    if (n < 0) {\n"
+        "        filedata[0] = '\\0';\n"
+        "    } else {\n"
+        "        filedata[n] = '\\0';\n"
+        "    }\n"
+        "    return n;\n"
+        "}\n"
+    )
+    root = _prepare_source_rule_campaign(
+        tmp_path,
+        monkeypatch,
+        candidate_id="candidate-bounded-wrapper-read",
+        source_relative="networking/brctl.c",
+        source_text=source_text,
+        function="read_file",
+        source_line=8,
+        write_width=1,
+    )
+    source_root = root / "sources" / "demo"
+    read_source = source_root / "libbb" / "read.c"
+    read_source.parent.mkdir(parents=True)
+    read_source.write_text(
+        "ssize_t FAST_FUNC safe_read(int fd, void *buf, size_t count) {\n"
+        "    ssize_t n; n = read(fd, buf, count); return n;\n"
+        "}\n"
+        "ssize_t FAST_FUNC full_read(int fd, void *buf, size_t len) {\n"
+        "    ssize_t cc, total = 0;\n"
+        "    while (len) { cc = safe_read(fd, buf, len);\n"
+        "        if (cc <= 0) break; total += cc; len -= cc; }\n"
+        "    return total;\n"
+        "}\n"
+        "ssize_t FAST_FUNC read_close(int fd, void *buf, size_t size) {\n"
+        "    size = full_read(fd, buf, size); return size;\n"
+        "}\n"
+        "ssize_t FAST_FUNC open_read_close(const char *name, void *buf, size_t size) {\n"
+        "    int fd = open(name, 0); return read_close(fd, buf, size);\n"
+        "}\n"
+    )
+    (source_root / "libbb" / "common_bufsiz.c").write_text(
+        "char bb_common_bufsiz1[COMMON_BUFSIZE];\n"
+    )
+    sdk_path = root / "sdk" / "fake-sdk.tar.zst"
+    sdk_ref = {
+        "path": str(sdk_path.relative_to(root)),
+        "sha256": sha256_file(sdk_path),
+        "kind": "source_review",
+    }
+    api_header = root / "sdk" / "unistd.h"
+    api_header.write_text("ssize_t read(int, void *, size_t);\n")
+    api_ref = {
+        "path": str(api_header.relative_to(root)),
+        "sha256": sha256_file(api_header),
+        "kind": "source_review",
+    }
+    monkeypatch.setattr(
+        checker_module,
+        "_reference_defined_data_symbol",
+        lambda _context, _source, name: {
+            "name": name,
+            "address": "0x4000",
+            "size_bytes": 1024,
+            "symbol_type": "B",
+            "reference_binary_path": "reference-builds/demo/symbol-rich/demo",
+            "reference_binary_sha256": sha256_file(
+                root / "reference-builds" / "demo" / "symbol-rich" / "demo"
+            ),
+        },
+    )
+    monkeypatch.setattr(
+        checker_module,
+        "_sdk_api_contract",
+        lambda _context, _mapping, api: {
+            "sdk_archive": sdk_ref,
+            "api_header": api_ref,
+            "api": api,
+            "declaration": "ssize_t read(int, void *, size_t);",
+            "success_contract": "a positive return is no greater than the requested byte count",
+            "sdk_sha256": sdk_ref["sha256"],
+        },
+    )
+
+    result = run_autoprove(root)
+
+    assert result.proven_candidates == 1
+    assert json.loads(result.summary_path.read_text())["counts_by_rule"] == {
+        "c_bounded_wrapper_read_terminator_v1": 1
+    }
+    assert check_all_certificates(root)["checked_certificate_count"] == 1
+
+
+def test_masked_static_ring_store_is_certified(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_text = (
+        "char *auto_string(char *str)\n"
+        "{\n"
+        "    static char *saved[4];\n"
+        "    static uint8_t cur_saved; /* = 0 */\n"
+        "    free(saved[cur_saved]);\n"
+        "    saved[cur_saved] = str;\n"
+        "    cur_saved = (cur_saved + 1) & (ARRAY_SIZE(saved)-1);\n"
+        "    return str;\n"
+        "}\n"
+    )
+    root = _prepare_source_rule_campaign(
+        tmp_path,
+        monkeypatch,
+        candidate_id="candidate-masked-ring",
+        source_relative="libbb/auto_string.c",
+        source_text=source_text,
+        function="auto_string",
+        source_line=6,
+        write_width=8,
+    )
+    header = root / "sources" / "demo" / "include" / "libbb.h"
+    header.parent.mkdir(parents=True)
+    header.write_text(
+        "#define ARRAY_SIZE(x) ((unsigned)(sizeof(x) / sizeof((x)[0])))\n"
+    )
+
+    result = run_autoprove(root)
+
+    assert result.proven_candidates == 1
+    assert json.loads(result.summary_path.read_text())["counts_by_rule"] == {
+        "c_masked_static_ring_index_v1": 1
+    }
+    assert check_all_certificates(root)["checked_certificate_count"] == 1
+
+
+def test_trailing_escape_terminator_is_certified(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_text = (
+        "static void add_cmd(const char *cmdstr)\n"
+        "{\n"
+        "    unsigned len, n;\n"
+        "    if (G.add_cmd_line) {\n"
+        "        char *tp = xasprintf(\"%s\\n%s\", G.add_cmd_line, cmdstr);\n"
+        "        free(G.add_cmd_line);\n"
+        "        cmdstr = G.add_cmd_line = tp;\n"
+        "    }\n"
+        "    n = len = strlen(cmdstr);\n"
+        "    while (n && cmdstr[n-1] == '\\\\')\n"
+        "        n--;\n"
+        "    if ((len - n) & 1) {\n"
+        "        if (!G.add_cmd_line)\n"
+        "            G.add_cmd_line = xstrdup(cmdstr);\n"
+        "        G.add_cmd_line[len-1] = '\\0';\n"
+        "    }\n"
+        "}\n"
+    )
+    root = _prepare_source_rule_campaign(
+        tmp_path,
+        monkeypatch,
+        candidate_id="candidate-trailing-escape",
+        source_relative="editors/sed.c",
+        source_text=source_text,
+        function="add_cmd",
+        source_line=15,
+        write_width=1,
+    )
+    allocator = root / "sources" / "demo" / "libbb" / "xfuncs_printf.c"
+    allocator.parent.mkdir(parents=True)
+    allocator.write_text(
+        "char* FAST_FUNC xstrdup(const char *s) {\n"
+        "    char *t; t = strdup(s); if (t == NULL) die(); return t;\n"
+        "}\n"
+        "char* FAST_FUNC xasprintf(const char *format, ...) {\n"
+        "    int r; char *string_ptr; va_list p;\n"
+        "    r = vasprintf(&string_ptr, format, p);\n"
+        "    if (r < 0) die(); return string_ptr;\n"
+        "}\n"
+    )
+
+    result = run_autoprove(root)
+
+    assert result.proven_candidates == 1
+    assert json.loads(result.summary_path.read_text())["counts_by_rule"] == {
+        "c_trailing_escape_terminator_v1": 1
+    }
+    assert check_all_certificates(root)["checked_certificate_count"] == 1
+
+
+@pytest.mark.parametrize(
+    ("candidate_id", "source_relative", "source_text", "function", "source_line", "write_width"),
+    [
+        (
+            "candidate-macro-scalar",
+            "shell/ash.c",
+            "struct globals_misc { volatile smallint pending_int; };\n"
+            "#define pending_int (G_misc.pending_int)\n"
+            "static void raise_interrupt(void)\n"
+            "{\n"
+            "    pending_int = 0;\n"
+            "}\n",
+            "raise_interrupt",
+            5,
+            1,
+        ),
+        (
+            "candidate-macro-array",
+            "editors/vi.c",
+            "struct globals { char *mark[28]; };\n"
+            "#define mark (G.mark)\n"
+            "static char *swap_context(char *p)\n"
+            "{\n"
+            "    char *tmp = p;\n"
+            "    mark[26] = p = tmp;\n"
+            "    return p;\n"
+            "}\n",
+            "swap_context",
+            6,
+            8,
+        ),
+    ],
+)
+def test_macro_typed_member_store_is_certified(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    candidate_id: str,
+    source_relative: str,
+    source_text: str,
+    function: str,
+    source_line: int,
+    write_width: int,
+) -> None:
+    root = _prepare_source_rule_campaign(
+        tmp_path,
+        monkeypatch,
+        candidate_id=candidate_id,
+        source_relative=source_relative,
+        source_text=source_text,
+        function=function,
+        source_line=source_line,
+        write_width=write_width,
+    )
+    platform = root / "sources" / "demo" / "include" / "platform.h"
+    platform.parent.mkdir(parents=True, exist_ok=True)
+    platform.write_text(
+        "#if defined(i386) || defined(__x86_64__)\n"
+        "typedef signed char smallint;\n"
+        "#else\n"
+        "typedef int smallint;\n"
+        "#endif\n"
+    )
+
+    result = run_autoprove(root)
+
+    assert result.proven_candidates == 1
+    assert json.loads(result.summary_path.read_text())["counts_by_rule"] == {
+        "c_macro_typed_member_store_v1": 1
+    }
+    assert check_all_certificates(root)["checked_certificate_count"] == 1
+
+
+@pytest.mark.parametrize(("bound", "proven"), [(3, True), (16, False)])
+def test_bounded_typed_byte_array_store_requires_in_capacity_guard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bound: int,
+    proven: bool,
+) -> None:
+    source_text = (
+        '#include "utils.h"\n'
+        "int FAST_FUNC get_addr_1(inet_prefix *addr, char *name, int family)\n"
+        "{\n"
+        "    unsigned i = 0;\n"
+        "    unsigned n = 0;\n"
+        "    const char *cp = name - 1;\n"
+        "    while (*++cp) {\n"
+        "        if ((unsigned char)(*cp - '0') <= 9) {\n"
+        "            n = 10 * n + (unsigned char)(*cp - '0');\n"
+        "            if (n >= 256)\n"
+        "                return -1;\n"
+        "            ((uint8_t*)addr->data)[i] = n;\n"
+        "            continue;\n"
+        "        }\n"
+        f"        if (*cp == '.' && ++i <= {bound}) {{\n"
+        "            n = 0;\n"
+        "            continue;\n"
+        "        }\n"
+        "        return -1;\n"
+        "    }\n"
+        "    return 0;\n"
+        "}\n"
+    )
+    root = _prepare_source_rule_campaign(
+        tmp_path,
+        monkeypatch,
+        candidate_id="candidate-bounded-typed-byte-store",
+        source_relative="networking/libiproute/utils.c",
+        source_text=source_text,
+        function="get_addr_1",
+        source_line=12,
+        write_width=1,
+    )
+    header = root / "sources" / "demo" / "networking" / "libiproute" / "utils.h"
+    header.write_text(
+        "typedef struct {\n"
+        "    uint8_t family;\n"
+        "    uint8_t bytelen;\n"
+        "    int16_t bitlen;\n"
+        "    uint32_t data[4];\n"
+        "} inet_prefix;\n"
+    )
+
+    result = run_autoprove(root)
+
+    assert result.proven_candidates == int(proven)
+    expected_counts = {"c_bounded_typed_byte_array_store_v1": 1} if proven else {}
+    assert json.loads(result.summary_path.read_text())["counts_by_rule"] == expected_counts
+    assert check_all_certificates(root)["checked_certificate_count"] == int(proven)
+
+
 def test_blobmsg_table_initialization_contract_is_admitted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1320,6 +1688,184 @@ def test_libubox_foreach_macro_initializes_loop_locals(
     assert finalize_campaign(root).ledger_path.is_file()
 
 
+@pytest.mark.parametrize(
+    ("conditional_memset", "expected_proven"),
+    [(False, 1), (True, 0)],
+)
+def test_struct_output_memset_requires_unconditional_dominating_initialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    conditional_memset: bool,
+    expected_proven: int,
+) -> None:
+    state = _state(
+        "candidate-struct-output",
+        operation_offset=0x140,
+        successor_literal=False,
+        vulnerability_type="uninitialized_memory_use",
+    )
+    operation_address = hex(IMAGE_BASE + 0x140)
+    state["source"]["expression"] = "local_58"
+    state["operation"] = {
+        "address": operation_address,
+        "operation_address": operation_address,
+        "pcode": "CALL",
+        "kind": "call",
+        "name": "use",
+        "evidence_source": "pcode_call",
+    }
+    state["sink"] = dict(state["operation"])
+    manifest = _manifest([state])
+    function = manifest["functions"][0]
+    function["body_size_bytes"] = 0x101
+    function["pcode_loads"] = []
+    function["basic_blocks"] = [
+        {
+            "start": hex(IMAGE_BASE + 0x80),
+            "end": hex(IMAGE_BASE + 0x180),
+            "successors": [],
+        }
+    ]
+    function["pcode_calls"] = [
+        {
+            "call_address": hex(IMAGE_BASE + 0x100),
+            "callee": "initialize",
+            "callee_address": hex(IMAGE_BASE + 0x200),
+            "arg_count": 1,
+            "args": [
+                {
+                    "address_space": "unique",
+                    "address": "0x9000",
+                    "size_bytes": 8,
+                    "var_name": "UNNAMED",
+                }
+            ],
+            "pcode": "CALL",
+            "target_kind": "direct",
+        },
+        {
+            "call_address": operation_address,
+            "callee": "use",
+            "callee_address": hex(IMAGE_BASE + 0x240),
+            "arg_count": 1,
+            "args": [
+                {
+                    "address_space": "stack",
+                    "address": "0x-58",
+                    "stack_offset": -88,
+                    "size_bytes": 4,
+                    "var_name": "local_58",
+                    "stack_ref": {"var_name": "local_58", "stack_offset": -88},
+                }
+            ],
+            "pcode": "CALL",
+            "target_kind": "direct",
+        },
+    ]
+    function["pcode_operations"] = [
+        {
+            "operation_address": hex(IMAGE_BASE + 0xF8),
+            "pcode": "PTRSUB",
+            "inputs": [
+                {"address_space": "register", "address": "0x20", "size_bytes": 8},
+                {"address_space": "const", "constant": -88, "size_bytes": 8},
+            ],
+            "output": {
+                "address_space": "unique",
+                "address": "0x9000",
+                "size_bytes": 8,
+            },
+        },
+        {
+            "operation_address": hex(IMAGE_BASE + 0x100),
+            "pcode": "CALL",
+            "inputs": [
+                {"address_space": "ram", "address": hex(IMAGE_BASE + 0x200), "size_bytes": 8},
+                {"address_space": "unique", "address": "0x9000", "size_bytes": 8},
+            ],
+            "output": {},
+        },
+        {
+            "operation_address": operation_address,
+            "pcode": "CALL",
+            "inputs": [
+                {"address_space": "ram", "address": hex(IMAGE_BASE + 0x240), "size_bytes": 8},
+                {
+                    "address_space": "stack",
+                    "address": "0x-58",
+                    "stack_offset": -88,
+                    "size_bytes": 4,
+                    "var_name": "local_58",
+                    "stack_ref": {"var_name": "local_58", "stack_offset": -88},
+                },
+            ],
+            "output": {},
+        },
+    ]
+    root = _prepare(tmp_path, [state], _elf_with_calls(), manifest_payload=manifest)
+    source_root = root / "sources" / "demo"
+    source_root.mkdir(parents=True)
+    (source_root / "demo.h").write_text(
+        "struct settings {\n"
+        "    unsigned int value;\n"
+        "};\n"
+    )
+    memset_source = (
+        "    if (ready) {\n"
+        "        memset(out, 0, sizeof(*out));\n"
+        "    }\n"
+        if conditional_memset
+        else "    memset(out, 0, sizeof(*out));\n"
+    )
+    (source_root / "demo.c").write_text(
+        "void initialize(struct settings *out)\n"
+        "{\n"
+        + memset_source
+        + "}\n"
+        "void target(void)\n"
+        "{\n"
+        "    struct settings st;\n"
+        "    initialize(&st);\n"
+        "    use(st.value);\n"
+        "}\n"
+    )
+    _add_source_reference_mapping(root, source_root)
+    monkeypatch.setattr(checker_module, "_git_head", lambda _root: "a" * 40)
+    monkeypatch.setattr(checker_module, "_addr2line_frames", lambda *_args: [])
+
+    def operation_mapping(_context: object, _mapping: object, address: int) -> dict:
+        names = ["initialize"] if address == IMAGE_BASE + 0x200 else ["target.constprop.0"]
+        return {
+            "mapping_basis": "exact_code_bytes",
+            "frozen_vma": address,
+            "reference_vma": address,
+            "reference_function_names": names,
+        }
+
+    monkeypatch.setattr(checker_module, "_reference_operation_mapping", operation_mapping)
+    reference = root / "reference-builds" / "demo" / "symbol-rich" / "demo"
+    monkeypatch.setattr(
+        checker_module,
+        "_reference_struct_layout",
+        lambda _context, _mapping, _name: {
+            "name": "settings",
+            "size_bytes": 4,
+            "members": [{"name": "value", "offset_bytes": 0, "size_bytes": 4}],
+            "reference_binary_path": str(reference.relative_to(root)),
+            "reference_binary_sha256": sha256_file(reference),
+        },
+    )
+
+    result = run_autoprove(root)
+
+    assert result.proven_candidates == expected_proven
+    assert result.residual_candidates == 1 - expected_proven
+    summary = json.loads(result.summary_path.read_text())
+    assert summary["counts_by_rule"] == (
+        {"c_struct_output_memset_initialization_v1": 1} if expected_proven else {}
+    )
+
+
 def test_checked_stat_output_initialization_is_admitted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1720,3 +2266,48 @@ def _add_source_reference_mapping(root: Path, source_root: Path) -> str:
     ]
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return sdk_hash
+
+
+def _prepare_source_rule_campaign(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    candidate_id: str,
+    source_relative: str,
+    source_text: str,
+    function: str,
+    source_line: int,
+    write_width: int,
+) -> Path:
+    state = _state(
+        candidate_id,
+        operation_offset=0x120,
+        successor_literal=False,
+        vulnerability_type="out_of_bounds_write",
+    )
+    manifest = _manifest([state])
+    manifest["functions"][0]["pcode_stores"][0]["write_width"] = write_width
+    root = _prepare(
+        tmp_path,
+        [state],
+        _elf_with_calls(),
+        manifest_payload=manifest,
+    )
+    source_root = root / "sources" / "demo"
+    source_path = source_root / source_relative
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_text(source_text)
+    _add_source_reference_mapping(root, source_root)
+    monkeypatch.setattr(checker_module, "_git_head", lambda _root: "a" * 40)
+    monkeypatch.setattr(
+        checker_module,
+        "_addr2line_frames",
+        lambda _reference, _address: [
+            {
+                "function": function,
+                "path": f"demo/{source_relative}",
+                "line": source_line,
+            }
+        ],
+    )
+    return root

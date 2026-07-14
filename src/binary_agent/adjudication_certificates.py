@@ -39,6 +39,13 @@ C_CHECKED_API_OUTPUT_RULE = "c_checked_api_output_initialization_v1"
 C_GUARDED_POINTER_RULE = "c_dominating_nonnull_guard_v1"
 C_ARRAY_OBJECT_RULE = "c_array_object_nonnull_v1"
 C_READ_TERMINATOR_RULE = "c_read_terminator_bounds_v1"
+C_TYPED_LINK_STORE_RULE = "c_typed_link_pointer_store_v1"
+C_BOUNDED_WRAPPER_READ_RULE = "c_bounded_wrapper_read_terminator_v1"
+C_MASKED_RING_INDEX_RULE = "c_masked_static_ring_index_v1"
+C_TRAILING_ESCAPE_RULE = "c_trailing_escape_terminator_v1"
+C_MACRO_TYPED_MEMBER_RULE = "c_macro_typed_member_store_v1"
+C_BOUNDED_TYPED_BYTE_STORE_RULE = "c_bounded_typed_byte_array_store_v1"
+C_STRUCT_OUTPUT_INIT_RULE = "c_struct_output_memset_initialization_v1"
 C_GUARDED_FIXED_ARRAY_RULE = "c_guarded_fixed_array_index_v1"
 C_HTML_ESCAPE_RULE = "c_html_escape_capacity_v1"
 C_JAIL_ARGV_RULE = "c_jail_argv_capacity_v1"
@@ -86,6 +93,13 @@ REGISTERED_RULES = (
     C_GUARDED_POINTER_RULE,
     C_ARRAY_OBJECT_RULE,
     C_READ_TERMINATOR_RULE,
+    C_TYPED_LINK_STORE_RULE,
+    C_BOUNDED_WRAPPER_READ_RULE,
+    C_MASKED_RING_INDEX_RULE,
+    C_TRAILING_ESCAPE_RULE,
+    C_MACRO_TYPED_MEMBER_RULE,
+    C_BOUNDED_TYPED_BYTE_STORE_RULE,
+    C_STRUCT_OUTPUT_INIT_RULE,
     C_GUARDED_FIXED_ARRAY_RULE,
     C_HTML_ESCAPE_RULE,
     C_JAIL_ARGV_RULE,
@@ -133,6 +147,13 @@ RULE_BASES = {
     C_GUARDED_POINTER_RULE: "source_proves_safety",
     C_ARRAY_OBJECT_RULE: "source_proves_safety",
     C_READ_TERMINATOR_RULE: "source_proves_safety",
+    C_TYPED_LINK_STORE_RULE: "source_proves_safety",
+    C_BOUNDED_WRAPPER_READ_RULE: "source_proves_safety",
+    C_MASKED_RING_INDEX_RULE: "source_proves_safety",
+    C_TRAILING_ESCAPE_RULE: "source_proves_safety",
+    C_MACRO_TYPED_MEMBER_RULE: "source_proves_safety",
+    C_BOUNDED_TYPED_BYTE_STORE_RULE: "source_proves_safety",
+    C_STRUCT_OUTPUT_INIT_RULE: "source_proves_safety",
     C_GUARDED_FIXED_ARRAY_RULE: "source_proves_safety",
     C_HTML_ESCAPE_RULE: "source_proves_safety",
     C_JAIL_ARGV_RULE: "source_proves_safety",
@@ -492,6 +513,20 @@ def derive_rule_proof(context: CampaignContext, rule_id: str) -> dict[str, Any]:
         return _derive_c_array_object(context)
     if rule_id == C_READ_TERMINATOR_RULE:
         return _derive_c_read_terminator(context)
+    if rule_id == C_TYPED_LINK_STORE_RULE:
+        return _derive_c_typed_link_store(context)
+    if rule_id == C_BOUNDED_WRAPPER_READ_RULE:
+        return _derive_c_bounded_wrapper_read(context)
+    if rule_id == C_MASKED_RING_INDEX_RULE:
+        return _derive_c_masked_ring_index(context)
+    if rule_id == C_TRAILING_ESCAPE_RULE:
+        return _derive_c_trailing_escape_terminator(context)
+    if rule_id == C_MACRO_TYPED_MEMBER_RULE:
+        return _derive_c_macro_typed_member(context)
+    if rule_id == C_BOUNDED_TYPED_BYTE_STORE_RULE:
+        return _derive_c_bounded_typed_byte_store(context)
+    if rule_id == C_STRUCT_OUTPUT_INIT_RULE:
+        return _derive_c_struct_output_initialization(context)
     if rule_id == C_GUARDED_FIXED_ARRAY_RULE:
         return _derive_c_guarded_fixed_array(context)
     if rule_id == C_HTML_ESCAPE_RULE:
@@ -2165,6 +2200,946 @@ def _derive_c_read_terminator(context: CampaignContext) -> dict[str, Any]:
             "capacity": True,
             "offset_relation": True,
             "bounds_proven": True,
+        },
+    }
+
+
+def _derive_c_typed_link_store(context: CampaignContext) -> dict[str, Any]:
+    if str(context.state.get("vulnerability_type") or "") not in SPATIAL_TYPES:
+        raise RuleNotApplicable("candidate is not spatial")
+    pointer_size = int(context.export_manifest.get("pointer_size_bytes") or 0)
+    if (
+        str(context.binding.get("pcode") or "") != "STORE"
+        or int(context.binding.get("width_bytes") or 0) != pointer_size
+        or pointer_size <= 0
+    ):
+        raise RuleNotApplicable("candidate is not a pointer-width STORE")
+    source = _exact_source_context(context)
+    frame = source["frame"]
+    lines = source["lines"]
+    line_number = int(frame["line"])
+    statement = lines[line_number - 1].strip()
+    store = re.fullmatch(
+        r"\*(?P<link>[A-Za-z_]\w*)\s*=\s*"
+        r"(?P<node>[A-Za-z_]\w*)->(?P<next>[A-Za-z_]\w*)\s*;",
+        statement,
+    )
+    if store is None:
+        raise RuleNotApplicable("exact source line is not a pointer-to-pointer link STORE")
+    link = store.group("link")
+    node = store.group("node")
+    next_field = store.group("next")
+    prefix = _source_function_prefix(lines, str(frame["function"]), line_number)
+    function_text = _source_function_text(lines, str(frame["function"]), line_number)
+    base = re.search(
+        rf"(?P<type>[A-Za-z_]\w*)\s*\*\*\s*{re.escape(link)}\s*=\s*"
+        rf"&(?P<owner>[A-Za-z_]\w*)->(?P<head>[A-Za-z_]\w*)\s*;",
+        prefix,
+    )
+    if base is None:
+        raise RuleNotApplicable("link cursor has no typed member-address initializer")
+    element_type = base.group("type")
+    required = (
+        rf"\b{re.escape(element_type)}\s*\*\s*{re.escape(node)}\s*;",
+        rf"while\s*\(\s*\(\s*{re.escape(node)}\s*=\s*\*{re.escape(link)}\s*\)\s*"
+        rf"!=\s*NULL\s*\)",
+        rf"\b{re.escape(link)}\s*=\s*&{re.escape(node)}->{re.escape(next_field)}\s*;",
+    )
+    if not all(re.search(pattern, prefix) for pattern in required):
+        raise RuleNotApplicable("typed cursor loop and link-field induction are incomplete")
+    source_text = "\n".join(lines)
+    type_body = re.search(
+        rf"typedef\s+struct\s+{re.escape(element_type)}\s*\{{(?P<body>.*?)\}}\s*"
+        rf"{re.escape(element_type)}\s*;",
+        source_text,
+        re.DOTALL,
+    )
+    if type_body is None or re.search(
+        rf"struct\s+{re.escape(element_type)}\s*\*\s*{re.escape(next_field)}\s*;",
+        type_body.group("body"),
+    ) is None:
+        raise RuleNotApplicable("next field is not a same-type pointer member")
+    head_field = base.group("head")
+    typed_head_declarations = re.findall(
+        rf"(?:struct\s+)?{re.escape(element_type)}\s*\*\s*{re.escape(head_field)}\s*;",
+        source_text,
+    )
+    if len(typed_head_declarations) != 1:
+        raise RuleNotApplicable("head field does not have one same-type pointer declaration")
+    step_assignments = re.findall(
+        rf"(?<!\*)\b{re.escape(link)}\s*=\s*(?P<rhs>[^;]+);",
+        function_text,
+    )
+    if [" ".join(item.split()) for item in step_assignments] != [
+        f"&{node}->{next_field}"
+    ]:
+        raise RuleNotApplicable("link cursor has an unproved reassignment")
+    source_binding = _source_binding(
+        context,
+        source,
+        source_function=str(frame["function"]),
+        source_lines=[line_number],
+    )
+    return {
+        "rule_claim": "the pointer-to-pointer cursor always designates a pointer-width link member",
+        "operation_address": str(context.binding.get("address") or ""),
+        "source_binding": source_binding,
+        "source_excerpt": {
+            "path": source_binding["source_path"],
+            "sha256": source_binding["source_sha256"],
+            "function": str(frame["function"]),
+            "line": line_number,
+            "statement": statement,
+            "base_cursor": " ".join(base.group(0).split()),
+            "inductive_cursor": f"{link} = &{node}->{next_field};",
+        },
+        "object_layout": {
+            "object_identity": (
+                f"typed_member:{base.group('owner')}->{head_field} or "
+                f"{node}->{next_field}"
+            ),
+            "capacity_expression": f"sizeof({element_type} *)",
+            "write_offset_bytes": 0,
+            "write_width_bytes": pointer_size,
+            "proven_relation": "STORE width equals either destination link member width",
+        },
+        "claims": {
+            "exact_operation": True,
+            "source_or_binary_binding": True,
+            "exact_store": True,
+            "object_identity": True,
+            "capacity": True,
+            "offset_relation": True,
+            "bounds_proven": True,
+        },
+    }
+
+
+def _derive_c_bounded_wrapper_read(context: CampaignContext) -> dict[str, Any]:
+    if str(context.state.get("vulnerability_type") or "") not in SPATIAL_TYPES:
+        raise RuleNotApplicable("candidate is not spatial")
+    if str(context.binding.get("pcode") or "") != "STORE" or int(
+        context.binding.get("width_bytes") or 0
+    ) != 1:
+        raise RuleNotApplicable("candidate is not a one-byte STORE")
+    source = _exact_source_context(context)
+    frame = source["frame"]
+    lines = source["lines"]
+    line_number = int(frame["line"])
+    statement = lines[line_number - 1].strip()
+    store = re.fullmatch(
+        r"(?P<buffer>[A-Za-z_]\w*)\[(?P<count>[A-Za-z_]\w*)\]\s*=\s*"
+        r"(?:0|'\\0')\s*;",
+        statement,
+    )
+    if store is None:
+        raise RuleNotApplicable("exact source line is not a wrapper-read terminator STORE")
+    buffer_name = store.group("buffer")
+    count_name = store.group("count")
+    prefix = _source_function_prefix(lines, str(frame["function"]), line_number)
+    call = re.search(
+        rf"(?:int|ssize_t)\s+{re.escape(count_name)}\s*=\s*"
+        rf"open_read_close\s*\([^,]+,\s*{re.escape(buffer_name)}\s*,\s*"
+        rf"(?P<capacity>[A-Za-z_]\w*)\s*-\s*1\s*\)\s*;",
+        prefix,
+    )
+    positive_branch = re.search(
+        rf"if\s*\(\s*{re.escape(count_name)}\s*<\s*0\s*\)\s*\{{.*?\}}\s*"
+        rf"else\s*\{{(?:(?!\}}).)*?{re.escape(buffer_name)}\s*\[\s*"
+        rf"{re.escape(count_name)}\s*\]\s*=",
+        prefix,
+        re.DOTALL,
+    )
+    if call is None or positive_branch is None:
+        raise RuleNotApplicable("wrapper request and nonnegative-result branch are incomplete")
+    capacity_name = call.group("capacity")
+    source_text = "\n".join(lines)
+    alias = re.search(
+        rf"^\s*#\s*define\s+{re.escape(buffer_name)}\s+(?P<object>[A-Za-z_]\w*)\s*$",
+        source_text,
+        re.MULTILINE,
+    )
+    if alias is None:
+        raise RuleNotApplicable("read buffer is not a direct named-object macro alias")
+    object_name = alias.group("object")
+    read_path, read_text, read_ref = _pinned_source_file(
+        context, source, "libbb/read.c", "bounded read wrapper source"
+    )
+    wrapper_patterns = (
+        r"ssize_t\s+FAST_FUNC\s+safe_read\s*\([^)]*size_t\s+count\s*\).*?"
+        r"n\s*=\s*read\s*\(\s*fd\s*,\s*buf\s*,\s*count\s*\)\s*;",
+        r"ssize_t\s+FAST_FUNC\s+full_read\s*\([^)]*size_t\s+len\s*\).*?"
+        r"while\s*\(\s*len\s*\).*?cc\s*=\s*safe_read\s*\(\s*fd\s*,\s*buf\s*,\s*len\s*\)\s*;"
+        r".*?total\s*\+=\s*cc\s*;\s*len\s*-=\s*cc\s*;.*?return\s+total\s*;",
+        r"ssize_t\s+FAST_FUNC\s+read_close\s*\([^)]*size_t\s+size\s*\).*?"
+        r"size\s*=\s*full_read\s*\(\s*fd\s*,\s*buf\s*,\s*size\s*\)\s*;.*?return\s+size\s*;",
+        r"ssize_t\s+FAST_FUNC\s+open_read_close\s*\([^)]*size_t\s+size\s*\).*?"
+        r"return\s+read_close\s*\(\s*fd\s*,\s*buf\s*,\s*size\s*\)\s*;",
+    )
+    if not all(re.search(pattern, read_text, re.DOTALL) for pattern in wrapper_patterns):
+        raise RuleNotApplicable(f"bounded wrapper implementation changed in {read_path.name}")
+    _common_path, common_text, common_ref = _pinned_source_file(
+        context, source, "libbb/common_bufsiz.c", "common buffer definition"
+    )
+    if re.search(
+        rf"char\s+{re.escape(object_name)}\s*\[\s*{re.escape(capacity_name)}\s*\]",
+        common_text,
+    ) is None:
+        raise RuleNotApplicable("common buffer definition and request capacity differ")
+    symbol = _reference_defined_data_symbol(context, source, object_name)
+    if int(symbol["size_bytes"]) <= 1:
+        raise RuleNotApplicable("reference common buffer has no terminator capacity")
+    dependency = _sdk_api_contract(context, _mapping(source.get("mapping")), api="read")
+    source_binding = _source_binding(
+        context,
+        source,
+        source_function=str(frame["function"]),
+        source_lines=[line_number],
+    )
+    return {
+        "rule_claim": "the wrapper returns at most its capacity-minus-one request before the terminator STORE",
+        "operation_address": str(context.binding.get("address") or ""),
+        "source_binding": source_binding,
+        "source_excerpt": {
+            "path": source_binding["source_path"],
+            "sha256": source_binding["source_sha256"],
+            "function": str(frame["function"]),
+            "line": line_number,
+            "statement": statement,
+            "read_call": " ".join(call.group(0).split()),
+            "success_path": f"{count_name} >= 0 in the else branch",
+        },
+        "dependency_contract": dependency,
+        "additional_source_refs": [
+            read_ref,
+            common_ref,
+            dependency["sdk_archive"],
+            dependency["api_header"],
+        ],
+        "reference_object": symbol,
+        "object_layout": {
+            "object_identity": f"static_array:{object_name}",
+            "capacity_expression": capacity_name,
+            "capacity_bytes_in_reference": int(symbol["size_bytes"]),
+            "write_offset_expression": count_name,
+            "write_width_bytes": 1,
+            "proven_relation": f"0 <= {count_name} <= {capacity_name} - 1",
+        },
+        "claims": {
+            "exact_operation": True,
+            "source_or_binary_binding": True,
+            "exact_store": True,
+            "object_identity": True,
+            "capacity": True,
+            "offset_relation": True,
+            "bounds_proven": True,
+        },
+    }
+
+
+def _derive_c_masked_ring_index(context: CampaignContext) -> dict[str, Any]:
+    if str(context.state.get("vulnerability_type") or "") not in SPATIAL_TYPES:
+        raise RuleNotApplicable("candidate is not spatial")
+    pointer_size = int(context.export_manifest.get("pointer_size_bytes") or 0)
+    if (
+        str(context.binding.get("pcode") or "") != "STORE"
+        or int(context.binding.get("width_bytes") or 0) != pointer_size
+        or pointer_size <= 0
+    ):
+        raise RuleNotApplicable("candidate is not a pointer-width STORE")
+    source = _exact_source_context(context)
+    frame = source["frame"]
+    lines = source["lines"]
+    line_number = int(frame["line"])
+    statement = lines[line_number - 1].strip()
+    store = re.fullmatch(
+        r"(?P<array>[A-Za-z_]\w*)\[(?P<index>[A-Za-z_]\w*)\]\s*=\s*.+;",
+        statement,
+    )
+    if store is None:
+        raise RuleNotApplicable("exact source line is not an indexed pointer STORE")
+    array_name = store.group("array")
+    index_name = store.group("index")
+    prefix = _source_function_prefix(lines, str(frame["function"]), line_number)
+    function_tail = "\n".join(lines[line_number - 1 :])
+    declaration = re.search(
+        rf"static\s+[^;\n]*\*\s*{re.escape(array_name)}\s*\[\s*(?P<count>\d+)\s*\]\s*;",
+        prefix,
+    )
+    index_declaration = re.search(
+        rf"static\s+(?P<type>(?:u?int\d+_t|unsigned(?:\s+\w+)*|size_t))\s+"
+        rf"{re.escape(index_name)}\s*;(?:\s*/\*\s*=\s*0\s*\*/)?",
+        prefix,
+    )
+    update = re.search(
+        rf"{re.escape(index_name)}\s*=\s*\(\s*{re.escape(index_name)}\s*\+\s*1\s*\)\s*"
+        rf"&\s*\(\s*ARRAY_SIZE\s*\(\s*{re.escape(array_name)}\s*\)\s*-\s*1\s*\)\s*;",
+        function_tail,
+    )
+    if declaration is None or index_declaration is None or update is None:
+        raise RuleNotApplicable("static array, zero index, and masked update are incomplete")
+    capacity = int(declaration.group("count"))
+    if capacity <= 0 or capacity & (capacity - 1):
+        raise RuleNotApplicable("masked ring capacity is not a positive power of two")
+    source_text = "\n".join(lines)
+    assignments = re.findall(rf"\b{re.escape(index_name)}\s*=\s*([^;]+);", source_text)
+    if len(assignments) != 1 or "ARRAY_SIZE" not in assignments[0]:
+        raise RuleNotApplicable("ring index has another source-level assignment")
+    _header_path, header_text, header_ref = _pinned_source_file(
+        context, source, "include/libbb.h", "ARRAY_SIZE definition"
+    )
+    if re.search(
+        r"^\s*#\s*define\s+ARRAY_SIZE\s*\(\s*x\s*\)\s*"
+        r"\(\(unsigned\)\(sizeof\(x\)\s*/\s*sizeof\(\(x\)\[0\]\)\)\)",
+        header_text,
+        re.MULTILINE,
+    ) is None:
+        raise RuleNotApplicable("ARRAY_SIZE definition changed")
+    source_binding = _source_binding(
+        context,
+        source,
+        source_function=str(frame["function"]),
+        source_lines=[line_number],
+    )
+    return {
+        "rule_claim": "the static-zero ring index is masked into the power-of-two array range after every use",
+        "operation_address": str(context.binding.get("address") or ""),
+        "source_binding": source_binding,
+        "source_excerpt": {
+            "path": source_binding["source_path"],
+            "sha256": source_binding["source_sha256"],
+            "function": str(frame["function"]),
+            "line": line_number,
+            "statement": statement,
+            "array_declaration": " ".join(declaration.group(0).split()),
+            "index_declaration": " ".join(index_declaration.group(0).split()),
+            "index_update": " ".join(update.group(0).split()),
+        },
+        "additional_source_refs": [header_ref],
+        "object_layout": {
+            "object_identity": f"static_array:{array_name}",
+            "capacity_elements": capacity,
+            "write_index_expression": index_name,
+            "write_width_bytes": pointer_size,
+            "proven_relation": f"0 <= {index_name} <= {capacity - 1}",
+        },
+        "claims": {
+            "exact_operation": True,
+            "source_or_binary_binding": True,
+            "exact_store": True,
+            "object_identity": True,
+            "capacity": True,
+            "offset_relation": True,
+            "bounds_proven": True,
+        },
+    }
+
+
+def _derive_c_trailing_escape_terminator(context: CampaignContext) -> dict[str, Any]:
+    if str(context.state.get("vulnerability_type") or "") not in SPATIAL_TYPES:
+        raise RuleNotApplicable("candidate is not spatial")
+    if str(context.binding.get("pcode") or "") != "STORE" or int(
+        context.binding.get("width_bytes") or 0
+    ) != 1:
+        raise RuleNotApplicable("candidate is not a one-byte STORE")
+    source = _exact_source_context(context)
+    frame = source["frame"]
+    lines = source["lines"]
+    line_number = int(frame["line"])
+    statement = lines[line_number - 1].strip()
+    store = re.fullmatch(
+        r"(?P<buffer>(?:[A-Za-z_]\w*\.)?[A-Za-z_]\w*)\s*"
+        r"\[\s*(?P<len>[A-Za-z_]\w*)\s*-\s*1\s*\]\s*=\s*(?:0|'\\0')\s*;",
+        statement,
+    )
+    if store is None:
+        raise RuleNotApplicable("exact source line is not a length-minus-one terminator STORE")
+    if str(frame.get("function") or "") != "add_cmd":
+        raise RuleNotApplicable("trailing-escape proof is not in add_cmd")
+    buffer_name = store.group("buffer")
+    len_name = store.group("len")
+    prefix = _source_function_prefix(lines, "add_cmd", line_number)
+    required = (
+        rf"(?P<n>[A-Za-z_]\w*)\s*=\s*{re.escape(len_name)}\s*=\s*strlen\s*\(\s*cmdstr\s*\)\s*;",
+        rf"while\s*\(\s*(?P<n>[A-Za-z_]\w*)\s*&&\s*cmdstr\s*\[\s*(?P=n)\s*-\s*1\s*\]\s*==\s*'\\\\'\s*\)\s*(?P=n)--\s*;",
+        rf"if\s*\(\s*\(\s*{re.escape(len_name)}\s*-\s*(?P<n>[A-Za-z_]\w*)\s*\)\s*&\s*1\s*\)\s*\{{",
+        rf"if\s*\(\s*!{re.escape(buffer_name)}\s*\)\s*"
+        rf"{re.escape(buffer_name)}\s*=\s*xstrdup\s*\(\s*cmdstr\s*\)\s*;",
+        r"cmdstr\s*=\s*G\.add_cmd_line\s*=\s*tp\s*;",
+        r"tp\s*=\s*xasprintf\s*\(\s*\"%s\\n%s\"\s*,\s*G\.add_cmd_line\s*,\s*cmdstr\s*\)\s*;",
+    )
+    matches = [re.search(pattern, prefix) for pattern in required]
+    if any(match is None for match in matches):
+        raise RuleNotApplicable("length parity and both allocation paths are incomplete")
+    n_name = matches[0].group("n")  # type: ignore[union-attr]
+    if matches[1].group("n") != n_name or matches[2].group("n") != n_name:  # type: ignore[union-attr]
+        raise RuleNotApplicable("trailing-run counter is inconsistent")
+    _allocator_path, allocator_text, allocator_ref = _pinned_source_file(
+        context, source, "libbb/xfuncs_printf.c", "string allocation wrappers"
+    )
+    allocator_patterns = (
+        r"char\*\s+FAST_FUNC\s+xstrdup\s*\([^)]*\).*?t\s*=\s*strdup\s*\(\s*s\s*\)\s*;"
+        r".*?if\s*\(\s*t\s*==\s*NULL\s*\).*?return\s+t\s*;",
+        r"char\*\s+FAST_FUNC\s+xasprintf\s*\([^)]*\).*?"
+        r"r\s*=\s*vasprintf\s*\(\s*&string_ptr\s*,\s*format\s*,\s*p\s*\)\s*;"
+        r".*?if\s*\(\s*r\s*<\s*0\s*\).*?return\s+string_ptr\s*;",
+    )
+    if not all(re.search(pattern, allocator_text, re.DOTALL) for pattern in allocator_patterns):
+        raise RuleNotApplicable("string allocation wrapper contracts changed")
+    source_binding = _source_binding(
+        context,
+        source,
+        source_function="add_cmd",
+        source_lines=[line_number],
+    )
+    return {
+        "rule_claim": "odd trailing-escape parity implies positive length and both paths allocate the complete command string",
+        "operation_address": str(context.binding.get("address") or ""),
+        "source_binding": source_binding,
+        "source_excerpt": {
+            "path": source_binding["source_path"],
+            "sha256": source_binding["source_sha256"],
+            "function": "add_cmd",
+            "line": line_number,
+            "statement": statement,
+            "length_initialization": " ".join(matches[0].group(0).split()),  # type: ignore[union-attr]
+            "trailing_scan": " ".join(matches[1].group(0).split()),  # type: ignore[union-attr]
+            "parity_guard": " ".join(matches[2].group(0).split()),  # type: ignore[union-attr]
+        },
+        "additional_source_refs": [allocator_ref],
+        "object_layout": {
+            "object_identity": f"allocated_string:{buffer_name}",
+            "capacity_expression": f"{len_name} + 1",
+            "write_offset_expression": f"{len_name} - 1",
+            "write_width_bytes": 1,
+            "proven_relation": (
+                f"({len_name} - {n_name}) is odd, so 1 <= {len_name}; "
+                f"therefore 0 <= {len_name} - 1 < {len_name} + 1"
+            ),
+        },
+        "claims": {
+            "exact_operation": True,
+            "source_or_binary_binding": True,
+            "exact_store": True,
+            "object_identity": True,
+            "capacity": True,
+            "offset_relation": True,
+            "bounds_proven": True,
+        },
+    }
+
+
+def _derive_c_macro_typed_member(context: CampaignContext) -> dict[str, Any]:
+    if str(context.state.get("vulnerability_type") or "") not in SPATIAL_TYPES:
+        raise RuleNotApplicable("candidate is not spatial")
+    if str(context.binding.get("pcode") or "") != "STORE":
+        raise RuleNotApplicable("exact operation is not a STORE")
+    source = _exact_source_context(context)
+    frame = source["frame"]
+    lines = source["lines"]
+    line_number = int(frame["line"])
+    statement = lines[line_number - 1].strip()
+    array_store = re.fullmatch(
+        r"(?P<name>[A-Za-z_]\w*)\s*\[\s*(?P<index>0x[0-9a-fA-F]+|\d+)\s*\]\s*=\s*.+;",
+        statement,
+    )
+    scalar_store = re.fullmatch(
+        r"(?P<name>[A-Za-z_]\w*)\s*=\s*.+;",
+        statement,
+    )
+    store = array_store or scalar_store
+    if store is None:
+        raise RuleNotApplicable("exact source line is not a macro-backed member STORE")
+    name = store.group("name")
+    source_text = "\n".join(lines)
+    macro_matches = re.findall(
+        rf"^\s*#\s*define\s+{re.escape(name)}\s+\(\s*"
+        rf"(?P<base>[A-Za-z_]\w*)\s*\.\s*(?P<field>[A-Za-z_]\w*)\s*\)\s*$",
+        source_text,
+        re.MULTILINE,
+    )
+    if len(macro_matches) != 1 or macro_matches[0][1] != name:
+        raise RuleNotApplicable("STORE name does not expand to one same-named struct member")
+    base_name, field_name = macro_matches[0]
+    declaration_text = re.sub(r"/\*.*?\*/", " ", source_text, flags=re.DOTALL)
+    width = int(context.binding.get("width_bytes") or 0)
+    pointer_size = int(context.export_manifest.get("pointer_size_bytes") or 0)
+    additional_refs: list[dict[str, str]] = []
+    if array_store is not None:
+        declarations = list(
+            re.finditer(
+                rf"(?P<type>(?:const\s+|volatile\s+|signed\s+|unsigned\s+)*"
+                rf"[A-Za-z_]\w*)\s*(?P<pointer>\*+)\s*{re.escape(field_name)}\s*"
+                rf"\[\s*(?P<count>0x[0-9a-fA-F]+|\d+)\s*\]\s*;",
+                declaration_text,
+            )
+        )
+        if len(declarations) != 1:
+            raise RuleNotApplicable("macro array member has no unique pointer-array declaration")
+        declaration = declarations[0]
+        capacity = int(declaration.group("count"), 0)
+        index = int(array_store.group("index"), 0)
+        if width != pointer_size or pointer_size <= 0:
+            raise RuleNotApplicable("array member STORE is not pointer-width")
+        if not 0 <= index < capacity:
+            raise RuleNotApplicable("constant member index is outside its declared array")
+        object_layout = {
+            "object_identity": f"typed_member:{base_name}.{field_name}",
+            "capacity_expression": f"{capacity} * sizeof({declaration.group('type')} *)",
+            "capacity_elements": capacity,
+            "write_index": index,
+            "write_width_bytes": width,
+            "proven_relation": f"0 <= {index} < {capacity}",
+        }
+        member_declaration = " ".join(declaration.group(0).split())
+    else:
+        declarations = list(
+            re.finditer(
+                rf"(?P<qualifiers>(?:(?:const|volatile)\s+)*)"
+                rf"(?P<type>smallint|u?int(?:8|16|32|64)_t|signed\s+char|unsigned\s+char|char)\s+"
+                rf"{re.escape(field_name)}\s*;",
+                declaration_text,
+            )
+        )
+        if len(declarations) != 1:
+            raise RuleNotApplicable("macro scalar member has no unique fixed-width declaration")
+        declaration = declarations[0]
+        type_name = " ".join(declaration.group("type").split())
+        fixed_widths = {
+            "char": 1,
+            "signed char": 1,
+            "unsigned char": 1,
+            "int8_t": 1,
+            "uint8_t": 1,
+            "int16_t": 2,
+            "uint16_t": 2,
+            "int32_t": 4,
+            "uint32_t": 4,
+            "int64_t": 8,
+            "uint64_t": 8,
+        }
+        expected_width = fixed_widths.get(type_name)
+        if type_name == "smallint":
+            if (
+                str(context.export_manifest.get("processor") or "") != "x86"
+                or pointer_size != 8
+            ):
+                raise RuleNotApplicable("smallint width is not proven for this architecture")
+            _platform_path, platform_text, platform_ref = _pinned_source_file(
+                context, source, "include/platform.h", "smallint definition"
+            )
+            if re.search(
+                r"#if\s+defined\(i386\).*?defined\(__x86_64__\).*?"
+                r"typedef\s+signed\s+char\s+smallint\s*;",
+                platform_text,
+                re.DOTALL,
+            ) is None:
+                raise RuleNotApplicable("x86_64 smallint definition changed")
+            additional_refs.append(platform_ref)
+            expected_width = 1
+        if expected_width is None or width != expected_width:
+            raise RuleNotApplicable("scalar member STORE width differs from its declared type")
+        object_layout = {
+            "object_identity": f"typed_member:{base_name}.{field_name}",
+            "capacity_expression": f"sizeof({base_name}.{field_name})",
+            "write_offset_bytes": 0,
+            "write_width_bytes": width,
+            "proven_relation": "STORE width equals the fixed-width scalar member capacity",
+        }
+        member_declaration = " ".join(declaration.group(0).split())
+    source_binding = _source_binding(
+        context,
+        source,
+        source_function=str(frame["function"]),
+        source_lines=[line_number],
+    )
+    proof = {
+        "rule_claim": "the source macro binds the exact STORE to a declared fixed-capacity struct member",
+        "operation_address": str(context.binding.get("address") or ""),
+        "source_binding": source_binding,
+        "source_excerpt": {
+            "path": source_binding["source_path"],
+            "sha256": source_binding["source_sha256"],
+            "function": str(frame["function"]),
+            "line": line_number,
+            "statement": statement,
+            "macro_expansion": f"{name} -> ({base_name}.{field_name})",
+            "member_declaration": member_declaration,
+        },
+        "object_layout": object_layout,
+        "claims": {
+            "exact_operation": True,
+            "source_or_binary_binding": True,
+            "exact_store": True,
+            "object_identity": True,
+            "capacity": True,
+            "offset_relation": True,
+            "bounds_proven": True,
+        },
+    }
+    if additional_refs:
+        proof["additional_source_refs"] = additional_refs
+    return proof
+
+
+def _derive_c_bounded_typed_byte_store(context: CampaignContext) -> dict[str, Any]:
+    if str(context.state.get("vulnerability_type") or "") not in SPATIAL_TYPES:
+        raise RuleNotApplicable("candidate is not spatial")
+    if (
+        str(context.binding.get("pcode") or "") != "STORE"
+        or int(context.binding.get("width_bytes") or 0) != 1
+    ):
+        raise RuleNotApplicable("exact operation is not a one-byte STORE")
+    source = _exact_source_context(context)
+    frame = source["frame"]
+    lines = source["lines"]
+    line_number = int(frame["line"])
+    statement = lines[line_number - 1].strip()
+    store = re.fullmatch(
+        r"\(\(\s*(?P<byte_type>u?int8_t|unsigned\s+char|signed\s+char|char)"
+        r"\s*\*\s*\)\s*(?P<object>[A-Za-z_]\w*)\s*->\s*"
+        r"(?P<field>[A-Za-z_]\w*)\s*\)\s*\[\s*"
+        r"(?P<index>[A-Za-z_]\w*)\s*\]\s*=\s*.+;",
+        statement,
+    )
+    if store is None:
+        raise RuleNotApplicable("exact source line is not a typed byte view member STORE")
+    object_name = store.group("object")
+    field_name = store.group("field")
+    index_name = store.group("index")
+    function_text = _source_function_text(
+        lines,
+        str(frame["function"]),
+        line_number,
+    )
+    parameter = re.search(
+        rf"\b(?P<type>[A-Za-z_]\w*)\s*\*\s*{re.escape(object_name)}\b",
+        function_text,
+    )
+    if parameter is None:
+        raise RuleNotApplicable("STORE base is not a typed pointer parameter")
+    record_type = parameter.group("type")
+    initialization_rows = [
+        number
+        for number, line in enumerate(lines, start=1)
+        if re.search(
+            rf"\bunsigned\s+{re.escape(index_name)}\s*=\s*0\s*;",
+            line,
+        )
+    ]
+    if len(initialization_rows) != 1 or initialization_rows[0] >= line_number:
+        raise RuleNotApplicable("byte index has no unique zero initialization before STORE")
+    guard = re.search(
+        rf"if\s*\(\s*[^)]*?&&\s*\+\+\s*{re.escape(index_name)}\s*"
+        rf"<=\s*(?P<bound>0x[0-9a-fA-F]+|\d+)\s*\)\s*\{{"
+        rf"(?P<body>[^{{}}]*)\}}",
+        function_text,
+        re.DOTALL,
+    )
+    statement_offset = function_text.find(statement)
+    if (
+        guard is None
+        or statement_offset < 0
+        or guard.start() <= statement_offset
+        or re.search(r"\bcontinue\s*;", guard.group("body")) is None
+        or re.match(r"\s*return\s+-1\s*;\s*\}", function_text[guard.end() :])
+        is None
+    ):
+        raise RuleNotApplicable("failed index guard can reach another loop iteration")
+    assignment_count = len(
+        re.findall(
+            rf"(?<![=!<>])\b{re.escape(index_name)}\s*=(?!=)",
+            function_text,
+        )
+    )
+    increment_count = len(
+        re.findall(rf"\+\+\s*\b{re.escape(index_name)}\b", function_text)
+    )
+    forbidden_mutations = re.search(
+        rf"(?:\b{re.escape(index_name)}\s*\+\+|--\s*\b{re.escape(index_name)}\b|"
+        rf"\b{re.escape(index_name)}\s*--|\b{re.escape(index_name)}\s*[+\-*/%&|^]=)",
+        function_text,
+    )
+    if assignment_count != 1 or increment_count != 1 or forbidden_mutations is not None:
+        raise RuleNotApplicable("byte index has additional mutations")
+    source_path = Path(source["source_path"])
+    source_text = "\n".join(lines)
+    declaration_inputs: list[tuple[Path, str]] = [(source_path, source_text)]
+    for include_name in re.findall(
+        r'^\s*#\s*include\s+"(?P<name>[^"/]+)"\s*$',
+        source_text,
+        re.MULTILINE,
+    ):
+        included = source_path.parent / include_name
+        if included.is_file():
+            declaration_inputs.append((included, _read_source_text(included)))
+    type_matches: list[tuple[Path, re.Match[str], re.Match[str]]] = []
+    type_pattern = re.compile(
+        rf"typedef\s+struct(?:\s+[A-Za-z_]\w*)?\s*\{{(?P<body>.*?)\}}\s*"
+        rf"{re.escape(record_type)}\s*;",
+        re.DOTALL,
+    )
+    field_pattern = re.compile(
+        rf"(?P<type>u?int(?:8|16|32|64)_t|unsigned\s+char|signed\s+char|char)"
+        rf"\s+{re.escape(field_name)}\s*\[\s*(?P<count>0x[0-9a-fA-F]+|\d+)\s*\]\s*;"
+    )
+    for path, text in declaration_inputs:
+        uncommented = re.sub(r"/\*.*?\*/", " ", text, flags=re.DOTALL)
+        for type_match in type_pattern.finditer(uncommented):
+            field_match = field_pattern.search(type_match.group("body"))
+            if field_match is not None:
+                type_matches.append((path, type_match, field_match))
+    if len(type_matches) != 1:
+        raise RuleNotApplicable("typed pointer has no unique included fixed-array member")
+    declaration_path, _type_match, field_match = type_matches[0]
+    element_type = " ".join(field_match.group("type").split())
+    element_widths = {
+        "char": 1,
+        "signed char": 1,
+        "unsigned char": 1,
+        "int8_t": 1,
+        "uint8_t": 1,
+        "int16_t": 2,
+        "uint16_t": 2,
+        "int32_t": 4,
+        "uint32_t": 4,
+        "int64_t": 8,
+        "uint64_t": 8,
+    }
+    element_width = element_widths[element_type]
+    element_count = int(field_match.group("count"), 0)
+    capacity_bytes = element_width * element_count
+    upper_bound = int(guard.group("bound"), 0)
+    if upper_bound + 1 > capacity_bytes:
+        raise RuleNotApplicable("guarded byte index can exceed the member capacity")
+    guard_lines = [
+        number
+        for number, line in enumerate(lines, start=1)
+        if re.search(
+            rf"\+\+\s*{re.escape(index_name)}\s*<=\s*{re.escape(guard.group('bound'))}",
+            line,
+        )
+    ]
+    if len(guard_lines) != 1:
+        raise RuleNotApplicable("index guard has no unique source line")
+    source_binding = _source_binding(
+        context,
+        source,
+        source_function=str(frame["function"]),
+        source_lines=sorted({initialization_rows[0], line_number, guard_lines[0]}),
+    )
+    declaration_ref = {
+        "path": _relative_if_contained(context.root, declaration_path),
+        "sha256": _sha256_file(declaration_path),
+        "kind": "source_review",
+    }
+    return {
+        "rule_claim": "the only byte-index induction is zero initialization followed by a terminating inclusive upper-bound guard",
+        "operation_address": str(context.binding.get("address") or ""),
+        "source_binding": source_binding,
+        "source_excerpt": {
+            "path": source_binding["source_path"],
+            "sha256": source_binding["source_sha256"],
+            "function": str(frame["function"]),
+            "line": line_number,
+            "statement": statement,
+            "index_initialization_line": initialization_rows[0],
+            "index_guard_line": guard_lines[0],
+            "member_declaration": " ".join(field_match.group(0).split()),
+        },
+        "additional_source_refs": [declaration_ref],
+        "object_layout": {
+            "object_identity": f"typed_member:{object_name}->{field_name}",
+            "capacity_expression": f"{element_count} * sizeof({element_type})",
+            "capacity_bytes": capacity_bytes,
+            "write_offset_expression": index_name,
+            "write_width_bytes": 1,
+            "proven_relation": f"0 <= {index_name} <= {upper_bound} < {capacity_bytes}",
+        },
+        "claims": {
+            "exact_operation": True,
+            "source_or_binary_binding": True,
+            "exact_store": True,
+            "object_identity": True,
+            "capacity": True,
+            "offset_relation": True,
+            "bounds_proven": True,
+        },
+    }
+
+
+def _derive_c_struct_output_initialization(context: CampaignContext) -> dict[str, Any]:
+    """Prove a split stack local is covered by a dominating typed output init.
+
+    Optimized binaries commonly split one source struct into many decompiler
+    locals.  A call that initializes the source object then appears as a set of
+    INDIRECT effects, while later field uses are reported as independent
+    uninitialized values.  This rule joins the exact later CALL input back to
+    the stack aggregate passed to a verified source callee, checks dominance,
+    and uses the reference build's DWARF layout for the byte-range relation.
+    """
+
+    if str(context.state.get("vulnerability_type") or "") != "uninitialized_memory_use":
+        raise RuleNotApplicable("candidate is not an uninitialized-use candidate")
+    if str(context.binding.get("pcode") or "") not in {"CALL", "CALLIND"}:
+        raise RuleNotApplicable("exact candidate operation is not a CALL")
+    selected = _mapping(context.binding.get("pcode_record"))
+    if str(selected.get("pcode") or "") != str(context.binding.get("pcode") or ""):
+        raise CertificateError("prepared CALL record disagrees with its p-code identity")
+    expression = str(_mapping(context.state.get("source")).get("expression") or "")
+    selected_inputs = (
+        _mapping_rows(selected.get("inputs"))
+        if selected.get("inputs") is not None
+        else _mapping_rows(selected.get("args"))
+    )
+    candidate_inputs = [
+        item
+        for item in selected_inputs
+        if _stack_var_name(item) == expression
+    ]
+    if len(candidate_inputs) != 1:
+        raise RuleNotApplicable("exact CALL does not consume the alleged stack local once")
+    candidate_input = candidate_inputs[0]
+    try:
+        candidate_offset = _integer_value(
+            candidate_input.get("stack_offset"), "candidate stack offset"
+        )
+    except CertificateError as exc:
+        raise RuleNotApplicable("exact CALL input is not a stack byte range") from exc
+    candidate_width = int(candidate_input.get("size_bytes") or 0)
+    if candidate_width <= 0:
+        raise RuleNotApplicable("exact CALL input has no positive byte width")
+
+    function = _bound_export_function(context)
+    candidate_address = _hex_int(context.binding.get("address"), "candidate CALL address")
+    initializers = _struct_output_initializers(context, function)
+    matches: list[dict[str, Any]] = []
+    for initializer in initializers:
+        base_offset = int(initializer["stack_base_offset"])
+        layout = _mapping(initializer.get("compiled_layout"))
+        capacity = int(layout.get("size_bytes") or 0)
+        relative_offset = candidate_offset - base_offset
+        if relative_offset < 0 or relative_offset + candidate_width > capacity:
+            continue
+        relation = _cfg_dominance_relation(
+            function,
+            str(initializer["call_address"]),
+            _hex(candidate_address),
+        )
+        if not relation["feasible"] or not relation["before_dominates_after"]:
+            continue
+        members = [
+            member
+            for member in _mapping_rows(layout.get("members"))
+            if int(member.get("offset_bytes") or 0) < relative_offset + candidate_width
+            and relative_offset
+            < int(member.get("offset_bytes") or 0) + int(member.get("size_bytes") or 0)
+        ]
+        use_lines = _struct_member_use_lines(
+            _mapping(initializer.get("caller_source")),
+            str(initializer["source_variable"]),
+            [str(member.get("name") or "") for member in members],
+            after_line=int(initializer["source_call_line"]),
+        )
+        if not members or not use_lines:
+            continue
+        matches.append(
+            {
+                **initializer,
+                "candidate_relative_offset": relative_offset,
+                "candidate_members": members,
+                "candidate_source_use_lines": use_lines,
+                "cfg_relation": relation,
+            }
+        )
+    if len(matches) != 1:
+        raise RuleNotApplicable("no unique dominating typed whole-struct initializer covers the CALL input")
+    match = matches[0]
+
+    mapping = _reference_mapping(context)
+    candidate_mapping = _reference_operation_mapping(context, mapping, candidate_address)
+    caller_source = _mapping(match.get("caller_source"))
+    caller_names = {
+        _normalized_c_function_name(item)
+        for item in _string_rows(candidate_mapping.get("reference_function_names"))
+    }
+    if str(caller_source.get("function") or "") not in caller_names:
+        raise RuleNotApplicable("candidate operation maps to another source function")
+    source_context = {
+        "mapping": mapping,
+        "operation_mapping": candidate_mapping,
+        "source_path": Path(str(caller_source["path"])),
+    }
+    source_lines = sorted(
+        {
+            int(match["source_declaration_line"]),
+            int(match["source_call_line"]),
+            *[int(item) for item in match["candidate_source_use_lines"]],
+        }
+    )
+    source_binding = _source_binding(
+        context,
+        source_context,
+        source_function=str(caller_source["function"]),
+        source_lines=source_lines,
+    )
+    callee_source = _mapping(match.get("callee_source"))
+    struct_source = _mapping(match.get("struct_source"))
+    additional_refs = _deduplicated_source_refs(
+        context,
+        [Path(str(callee_source["path"])), Path(str(struct_source["path"]))],
+    )
+    layout = _mapping(match.get("compiled_layout"))
+    return {
+        "rule_claim": "a dominating typed output call unconditionally zero-initializes every byte of the containing compiled struct",
+        "operation_address": _hex(candidate_address),
+        "source_binding": source_binding,
+        "initializer": {
+            "call_address": str(match["call_address"]),
+            "callee_address": str(match["callee_address"]),
+            "callee_function": str(callee_source["function"]),
+            "output_parameter_index": int(match["output_parameter_index"]),
+            "output_parameter": str(match["output_parameter"]),
+            "memset_line": int(match["memset_line"]),
+            "memset_statement": str(match["memset_statement"]),
+            "source_call_line": int(match["source_call_line"]),
+            "source_call_statement": str(match["source_call_statement"]),
+            "source_variable": str(match["source_variable"]),
+            "cfg_relation": _mapping(match.get("cfg_relation")),
+            "callee_source_binding": _mapping(match.get("callee_source_binding")),
+        },
+        "compiled_object": {
+            "type": f"struct {layout['name']}",
+            "reference_binary_path": str(layout["reference_binary_path"]),
+            "reference_binary_sha256": str(layout["reference_binary_sha256"]),
+            "capacity_bytes": int(layout["size_bytes"]),
+            "stack_base_offset": int(match["stack_base_offset"]),
+            "candidate_stack_offset": candidate_offset,
+            "candidate_relative_offset": int(match["candidate_relative_offset"]),
+            "candidate_width_bytes": candidate_width,
+            "overlapping_members": [
+                {
+                    "name": str(item.get("name") or ""),
+                    "offset_bytes": int(item.get("offset_bytes") or 0),
+                    "size_bytes": int(item.get("size_bytes") or 0),
+                }
+                for item in match["candidate_members"]
+            ],
+            "proven_relation": (
+                f"0 <= {int(match['candidate_relative_offset'])} and "
+                f"{int(match['candidate_relative_offset'])} + {candidate_width} "
+                f"<= {int(layout['size_bytes'])}"
+            ),
+        },
+        "additional_source_refs": additional_refs,
+        "claims": {
+            "exact_operation": True,
+            "source_or_binary_binding": True,
+            "all_path_initialization": True,
+            "cfg_dominance": True,
+            "object_identity": True,
+            "capacity": True,
+            "offset_relation": True,
         },
     }
 
@@ -4441,6 +5416,679 @@ def _disassembly_window(
     return result.stdout
 
 
+def _pinned_source_file(
+    context: CampaignContext,
+    source: Mapping[str, Any],
+    relative_path: str,
+    label: str,
+) -> tuple[Path, str, dict[str, str]]:
+    source_root = _contained_directory(
+        context.root,
+        Path(source["source_root"]),
+        "source checkout",
+    )
+    path = _contained_file(context.root, source_root / relative_path, label)
+    return (
+        path,
+        _read_source_text(path),
+        {
+            "path": _relative_if_contained(context.root, path),
+            "sha256": _sha256_file(path),
+            "kind": "source_review",
+        },
+    )
+
+
+def _reference_defined_data_symbol(
+    context: CampaignContext,
+    source: Mapping[str, Any],
+    name: str,
+) -> dict[str, Any]:
+    cache = context.shared_cache.setdefault("reference_data_symbols", {})
+    if isinstance(cache, dict) and isinstance(cache.get(name), Mapping):
+        return dict(cache[name])
+    mapping = _mapping(source.get("mapping"))
+    reference_path = _contained_file(
+        context.root,
+        str(_mapping(mapping.get("reference_binary")).get("path") or ""),
+        "reference binary",
+    )
+    try:
+        result = subprocess.run(
+            ["nm", "-S", "--defined-only", str(reference_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise CertificateError(f"cannot enumerate reference data symbols: {exc}") from exc
+    pattern = re.compile(
+        r"^(?P<address>[0-9a-fA-F]+)\s+(?P<size>[0-9a-fA-F]+)\s+"
+        r"(?P<type>[bBdDrRsSgGcCvV])\s+(?P<name>\S+)$"
+    )
+    matches: list[dict[str, Any]] = []
+    for line in result.stdout.splitlines():
+        match = pattern.match(line.strip())
+        if match is None or match.group("name") != name:
+            continue
+        matches.append(
+            {
+                "name": name,
+                "address": _hex(int(match.group("address"), 16)),
+                "size_bytes": int(match.group("size"), 16),
+                "symbol_type": match.group("type"),
+                "reference_binary_path": _relative_if_contained(context.root, reference_path),
+                "reference_binary_sha256": _sha256_file(reference_path),
+            }
+        )
+    if len(matches) != 1:
+        raise RuleNotApplicable(f"reference build lacks one defined data symbol {name}")
+    if isinstance(cache, dict):
+        cache[name] = matches[0]
+    return matches[0]
+
+
+def _struct_output_initializers(
+    context: CampaignContext,
+    function: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Enumerate typed whole-struct output initializers in one frozen function."""
+
+    function_address = str(function.get("address") or "").lower()
+    cache = context.shared_cache.setdefault("struct_output_initializers", {})
+    if isinstance(cache, dict) and isinstance(cache.get(function_address), list):
+        return [dict(item) for item in cache[function_address]]
+
+    mapping = _reference_mapping(context)
+    source_mapping = _mapping(mapping.get("source"))
+    source_root = _contained_directory(
+        context.root,
+        str(source_mapping.get("path") or ""),
+        "source checkout",
+    )
+    if _git_head(source_root) != str(source_mapping.get("commit") or "").lower():
+        raise CertificateError("source checkout no longer matches the reference mapping commit")
+
+    operations = _mapping_rows(function.get("pcode_operations"))
+    producers: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
+    for operation in operations:
+        if str(operation.get("pcode") or "") != "PTRSUB":
+            continue
+        output = _mapping(operation.get("output"))
+        identity = _varnode_identity(output)
+        if identity is not None:
+            producers.setdefault(identity, []).append(operation)
+
+    results: list[dict[str, Any]] = []
+    for call in _mapping_rows(function.get("pcode_calls")):
+        if str(call.get("pcode") or "") != "CALL":
+            continue
+        try:
+            call_address = _hex_int(call.get("call_address"), "initializer CALL address")
+            callee_address = _hex_int(call.get("callee_address"), "initializer callee address")
+        except CertificateError:
+            continue
+        try:
+            callee_mapping = _reference_operation_mapping(context, mapping, callee_address)
+        except RuleNotApplicable:
+            continue
+        callee_names = _string_rows(callee_mapping.get("reference_function_names"))
+        try:
+            callee_source = _source_function_for_symbols(context, source_root, callee_names)
+        except RuleNotApplicable:
+            continue
+        contracts = _whole_struct_memset_contract(callee_source)
+        if not contracts:
+            continue
+        args = _mapping_rows(call.get("args"))
+        for contract in contracts:
+            argument_index = int(contract["parameter_index"])
+            if argument_index >= len(args):
+                continue
+            argument = args[argument_index]
+            identity = _varnode_identity(argument)
+            pointer_producers = [
+                item
+                for item in (producers.get(identity, []) if identity is not None else [])
+                if _hex_int(item.get("operation_address"), "stack pointer producer address")
+                <= call_address
+            ]
+            if not pointer_producers:
+                continue
+            latest_address = max(
+                _hex_int(item.get("operation_address"), "stack pointer producer address")
+                for item in pointer_producers
+            )
+            latest_producers = [
+                item
+                for item in pointer_producers
+                if _hex_int(item.get("operation_address"), "stack pointer producer address")
+                == latest_address
+            ]
+            if len(latest_producers) != 1:
+                continue
+            producer = latest_producers[0]
+            producer_address = _hex_int(
+                producer.get("operation_address"), "stack pointer producer address"
+            )
+            if producer_address > call_address:
+                continue
+            constants = [
+                int(item["constant"])
+                for item in _mapping_rows(producer.get("inputs"))
+                if isinstance(item.get("constant"), int)
+            ]
+            if len(constants) != 1 or constants[0] >= 0:
+                continue
+            struct_type = str(contract["struct_type"])
+            try:
+                layout = _reference_struct_layout(context, mapping, struct_type)
+                caller_mapping = _reference_operation_mapping(context, mapping, call_address)
+                caller_source = _source_function_for_symbols(
+                    context,
+                    source_root,
+                    _string_rows(caller_mapping.get("reference_function_names")),
+                )
+                source_call = _typed_output_source_call(
+                    caller_source,
+                    callee_function=str(callee_source["function"]),
+                    struct_type=struct_type,
+                )
+                struct_source = _source_struct_definition(
+                    context,
+                    source_root,
+                    struct_type,
+                    [str(item.get("name") or "") for item in layout["members"]],
+                )
+            except RuleNotApplicable:
+                continue
+            callee_context = {
+                "mapping": mapping,
+                "operation_mapping": callee_mapping,
+                "source_path": Path(str(callee_source["path"])),
+            }
+            callee_binding = _source_binding(
+                context,
+                callee_context,
+                source_function=str(callee_source["function"]),
+                source_lines=[int(contract["memset_line"])],
+            )
+            results.append(
+                {
+                    "call_address": _hex(call_address),
+                    "callee_address": _hex(callee_address),
+                    "output_parameter_index": argument_index,
+                    "output_parameter": str(contract["parameter_name"]),
+                    "stack_base_offset": constants[0],
+                    "memset_line": int(contract["memset_line"]),
+                    "memset_statement": str(contract["memset_statement"]),
+                    "compiled_layout": layout,
+                    "callee_source": callee_source,
+                    "callee_source_binding": callee_binding,
+                    "caller_source": caller_source,
+                    "struct_source": struct_source,
+                    **source_call,
+                }
+            )
+    unique: dict[tuple[int, int, str], dict[str, Any]] = {}
+    for result in results:
+        key = (
+            _hex_int(result["call_address"], "initializer CALL address"),
+            int(result["output_parameter_index"]),
+            str(result["source_variable"]),
+        )
+        unique[key] = result
+    normalized = [unique[key] for key in sorted(unique)]
+    if isinstance(cache, dict):
+        cache[function_address] = normalized
+    return [dict(item) for item in normalized]
+
+
+def _normalized_c_function_name(value: str) -> str:
+    name = str(value or "").split("@", 1)[0]
+    while True:
+        normalized = re.sub(
+            r"\.(?:constprop|isra|part|cold|lto_priv)(?:\.\d+|\.\d+\.\d+)?$",
+            "",
+            name,
+        )
+        if normalized == name:
+            return name
+        name = normalized
+
+
+def _source_function_for_symbols(
+    context: CampaignContext,
+    source_root: Path,
+    symbol_names: Sequence[str],
+) -> dict[str, Any]:
+    names = sorted(
+        {
+            _normalized_c_function_name(name)
+            for name in symbol_names
+            if _normalized_c_function_name(name)
+        }
+    )
+    if not names:
+        raise RuleNotApplicable("reference function has no source-level symbol name")
+    index = _source_function_index(context, source_root)
+    matches = [item for name in names for item in index.get(name, [])]
+    by_location = {
+        (str(item["path"]), int(item["start_line"]), int(item["end_line"])): item
+        for item in matches
+    }
+    if len(by_location) != 1:
+        raise RuleNotApplicable("reference symbol has no unique pinned source definition")
+    return dict(next(iter(by_location.values())))
+
+
+def _source_function_index(
+    context: CampaignContext,
+    source_root: Path,
+) -> dict[str, list[dict[str, Any]]]:
+    cache_key = f"source_function_index:{source_root.resolve()}"
+    cached = context.shared_cache.get(cache_key)
+    if isinstance(cached, dict):
+        return cached
+    index: dict[str, list[dict[str, Any]]] = {}
+    paths = sorted(
+        path
+        for suffix in ("*.c", "*.h")
+        for path in source_root.rglob(suffix)
+        if ".git" not in path.parts
+    )
+    for path in paths:
+        lines = _read_source_text(path).splitlines()
+        for open_line, close_line in _c_brace_pairs(lines):
+            header_start, header = _c_block_header(lines, open_line)
+            header_without_brace = header.rsplit("{", 1)[0]
+            matches = list(re.finditer(r"\b([A-Za-z_]\w*)\s*\(", header_without_brace))
+            if not matches:
+                continue
+            function = matches[-1].group(1)
+            if function in {"if", "for", "while", "switch"} or ";" in header_without_brace:
+                continue
+            index.setdefault(function, []).append(
+                {
+                    "function": function,
+                    "path": path,
+                    "lines": lines,
+                    "start_line": header_start,
+                    "open_line": open_line,
+                    "end_line": close_line,
+                    "header": header,
+                    "text": "\n".join(lines[header_start - 1 : close_line]),
+                }
+            )
+    context.shared_cache[cache_key] = index
+    return index
+
+
+def _whole_struct_memset_contract(source: Mapping[str, Any]) -> list[dict[str, Any]]:
+    function = str(source.get("function") or "")
+    text = str(source.get("text") or "")
+    signature = re.search(
+        rf"\b{re.escape(function)}\s*\((?P<parameters>.*?)\)\s*\{{",
+        text,
+        re.DOTALL,
+    )
+    if signature is None:
+        return []
+    parameters = _split_c_parameters(signature.group("parameters"))
+    lines = list(source.get("lines") or [])
+    open_line = int(source.get("open_line") or 0)
+    end_line = int(source.get("end_line") or 0)
+    results: list[dict[str, Any]] = []
+    for index, parameter in enumerate(parameters):
+        typed = re.fullmatch(
+            r"\s*(?:const\s+)?struct\s+(?P<type>[A-Za-z_]\w*)\s*\*\s*"
+            r"(?P<name>[A-Za-z_]\w*)\s*",
+            parameter,
+        )
+        if typed is None:
+            continue
+        parameter_name = typed.group("name")
+        pattern = re.compile(
+            rf"^\s*memset\s*\(\s*{re.escape(parameter_name)}\s*,\s*0\s*,\s*"
+            rf"sizeof\s*\(\s*\*\s*{re.escape(parameter_name)}\s*\)\s*\)\s*;\s*$"
+        )
+        memset_lines = [
+            line_number
+            for line_number in range(open_line + 1, end_line)
+            if pattern.match(lines[line_number - 1])
+        ]
+        if len(memset_lines) != 1:
+            continue
+        memset_line = memset_lines[0]
+        prefix = "\n".join(lines[open_line: memset_line - 1])
+        if re.search(r"\b(?:if|for|while|switch|return|goto)\b|[{}]", prefix):
+            continue
+        results.append(
+            {
+                "parameter_index": index,
+                "parameter_name": parameter_name,
+                "struct_type": typed.group("type"),
+                "memset_line": memset_line,
+                "memset_statement": lines[memset_line - 1].strip(),
+            }
+        )
+    return results
+
+
+def _split_c_parameters(value: str) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    for index, character in enumerate(value):
+        if character in "([":
+            depth += 1
+        elif character in ")]":
+            depth = max(0, depth - 1)
+        elif character == "," and depth == 0:
+            parts.append(value[start:index].strip())
+            start = index + 1
+    tail = value[start:].strip()
+    if tail and tail != "void":
+        parts.append(tail)
+    return parts
+
+
+def _typed_output_source_call(
+    caller: Mapping[str, Any],
+    *,
+    callee_function: str,
+    struct_type: str,
+) -> dict[str, Any]:
+    text = str(caller.get("text") or "")
+    start_line = int(caller.get("start_line") or 0)
+    calls = list(
+        re.finditer(
+            rf"\b{re.escape(callee_function)}\s*\((?P<args>[^;]*?)\)\s*;",
+            text,
+            re.DOTALL,
+        )
+    )
+    matches: list[dict[str, Any]] = []
+    for call in calls:
+        variables = re.findall(r"&\s*([A-Za-z_]\w*)\b", call.group("args"))
+        for variable in sorted(set(variables)):
+            declarations = list(
+                re.finditer(
+                    rf"\bstruct\s+{re.escape(struct_type)}\s+"
+                    rf"{re.escape(variable)}\s*;",
+                    text[: call.start()],
+                )
+            )
+            if len(declarations) != 1:
+                continue
+            matches.append(
+                {
+                    "source_variable": variable,
+                    "source_declaration_line": (
+                        start_line + text[: declarations[0].start()].count("\n")
+                    ),
+                    "source_call_line": start_line + text[: call.start()].count("\n"),
+                    "source_call_statement": " ".join(call.group(0).split()),
+                }
+            )
+    if len(matches) != 1:
+        raise RuleNotApplicable("caller has no unique typed address-of output call")
+    return matches[0]
+
+
+def _source_struct_definition(
+    context: CampaignContext,
+    source_root: Path,
+    name: str,
+    member_names: Sequence[str],
+) -> dict[str, Any]:
+    cache = context.shared_cache.setdefault("source_struct_definitions", {})
+    if isinstance(cache, dict) and isinstance(cache.get(name), Mapping):
+        return dict(cache[name])
+    matches: list[dict[str, Any]] = []
+    for suffix in ("*.c", "*.h"):
+        for path in sorted(source_root.rglob(suffix)):
+            if ".git" in path.parts:
+                continue
+            lines = _read_source_text(path).splitlines()
+            for open_line, close_line in _c_brace_pairs(lines):
+                header_start, header = _c_block_header(lines, open_line)
+                if re.search(rf"\bstruct\s+{re.escape(name)}\s*\{{", header) is None:
+                    continue
+                body = "\n".join(lines[header_start - 1 : close_line])
+                if not all(re.search(rf"\b{re.escape(member)}\b", body) for member in member_names):
+                    continue
+                matches.append(
+                    {
+                        "name": name,
+                        "path": path,
+                        "start_line": header_start,
+                        "end_line": close_line,
+                        "declaration": " ".join(body.split()),
+                    }
+                )
+    if len(matches) != 1:
+        raise RuleNotApplicable("compiled struct has no unique complete source declaration")
+    if isinstance(cache, dict):
+        cache[name] = matches[0]
+    return dict(matches[0])
+
+
+def _reference_struct_layout(
+    context: CampaignContext,
+    mapping: Mapping[str, Any],
+    name: str,
+) -> dict[str, Any]:
+    cache = context.shared_cache.setdefault("reference_struct_layouts", {})
+    if isinstance(cache, dict) and isinstance(cache.get(name), Mapping):
+        return dict(cache[name])
+    try:
+        from elftools.elf.elffile import ELFFile  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise CertificateError("pyelftools is required for compiled struct layouts") from exc
+    reference_path = _contained_file(
+        context.root,
+        str(_mapping(mapping.get("reference_binary")).get("path") or ""),
+        "reference binary",
+    )
+    layouts: dict[tuple[Any, ...], dict[str, Any]] = {}
+    with reference_path.open("rb") as handle:
+        elf = ELFFile(handle)
+        if not elf.has_dwarf_info():
+            raise RuleNotApplicable("reference binary has no DWARF struct layout")
+        for compilation_unit in elf.get_dwarf_info().iter_CUs():
+            for die in compilation_unit.iter_DIEs():
+                if die.tag != "DW_TAG_structure_type" or _dwarf_name(die) != name:
+                    continue
+                size_attr = die.attributes.get("DW_AT_byte_size")
+                if size_attr is None or not die.has_children:
+                    continue
+                members: list[dict[str, Any]] = []
+                valid = True
+                for child in die.iter_children():
+                    if child.tag != "DW_TAG_member":
+                        continue
+                    member_name = _dwarf_name(child)
+                    location = child.attributes.get("DW_AT_data_member_location")
+                    member_type = child.get_DIE_from_attribute("DW_AT_type")
+                    member_size = _dwarf_type_size(member_type, set())
+                    if (
+                        not member_name
+                        or location is None
+                        or not isinstance(location.value, int)
+                        or member_size is None
+                        or member_size <= 0
+                    ):
+                        valid = False
+                        break
+                    members.append(
+                        {
+                            "name": member_name,
+                            "offset_bytes": int(location.value),
+                            "size_bytes": int(member_size),
+                        }
+                    )
+                if not valid or not members:
+                    continue
+                size = int(size_attr.value)
+                if any(
+                    int(item["offset_bytes"]) + int(item["size_bytes"]) > size
+                    for item in members
+                ):
+                    continue
+                key = (
+                    size,
+                    tuple(
+                        (item["name"], item["offset_bytes"], item["size_bytes"])
+                        for item in members
+                    ),
+                )
+                layouts[key] = {
+                    "name": name,
+                    "size_bytes": size,
+                    "members": members,
+                    "reference_binary_path": _relative_if_contained(context.root, reference_path),
+                    "reference_binary_sha256": _sha256_file(reference_path),
+                }
+    if len(layouts) != 1:
+        raise RuleNotApplicable("reference DWARF has no unique complete struct layout")
+    result = next(iter(layouts.values()))
+    if isinstance(cache, dict):
+        cache[name] = result
+    return dict(result)
+
+
+def _dwarf_name(die: Any) -> str:
+    attribute = die.attributes.get("DW_AT_name") if die is not None else None
+    value = attribute.value if attribute is not None else b""
+    return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else str(value or "")
+
+
+def _dwarf_type_size(die: Any, seen: set[int]) -> int | None:
+    if die is None or int(die.offset) in seen:
+        return None
+    seen.add(int(die.offset))
+    size = die.attributes.get("DW_AT_byte_size")
+    if size is not None and isinstance(size.value, int):
+        return int(size.value)
+    if die.tag == "DW_TAG_array_type":
+        element = die.get_DIE_from_attribute("DW_AT_type")
+        element_size = _dwarf_type_size(element, seen)
+        if element_size is None:
+            return None
+        count = 1
+        for child in die.iter_children():
+            if child.tag != "DW_TAG_subrange_type":
+                continue
+            count_attr = child.attributes.get("DW_AT_count")
+            upper = child.attributes.get("DW_AT_upper_bound")
+            lower = child.attributes.get("DW_AT_lower_bound")
+            if count_attr is not None and isinstance(count_attr.value, int):
+                count *= int(count_attr.value)
+            elif upper is not None and isinstance(upper.value, int):
+                lower_value = int(lower.value) if lower is not None else 0
+                count *= int(upper.value) - lower_value + 1
+            else:
+                return None
+        return element_size * count
+    target = die.get_DIE_from_attribute("DW_AT_type")
+    return _dwarf_type_size(target, seen) if target is not None else None
+
+
+def _cfg_dominance_relation(
+    function: Mapping[str, Any],
+    before_address: str,
+    after_address: str,
+) -> dict[str, Any]:
+    from binary_agent.analysis.program_index import IndexedBasicBlock, _cfg_event_relation
+
+    name = str(function.get("name") or "")
+    blocks = [
+        IndexedBasicBlock(
+            function_name=name,
+            start_address=str(item.get("start") or ""),
+            end_address=str(item.get("end") or ""),
+            successors=tuple(str(value) for value in item.get("successors", []) if value),
+        )
+        for item in _mapping_rows(function.get("basic_blocks"))
+    ]
+    relation = _cfg_event_relation(blocks, before_address, after_address)
+    return {
+        "relation": relation.relation,
+        "feasible": relation.feasible,
+        "before_dominates_after": relation.before_dominates_after,
+        "same_block": relation.same_block,
+        "evidence": relation.evidence,
+    }
+
+
+def _struct_member_use_lines(
+    source: Mapping[str, Any],
+    variable: str,
+    member_names: Sequence[str],
+    *,
+    after_line: int,
+) -> list[int]:
+    lines = list(source.get("lines") or [])
+    end_line = int(source.get("end_line") or 0)
+    patterns = [
+        re.compile(rf"\b{re.escape(variable)}\s*\.\s*{re.escape(name)}\b")
+        for name in member_names
+        if name
+    ]
+    return [
+        line_number
+        for line_number in range(after_line + 1, end_line + 1)
+        if any(pattern.search(lines[line_number - 1]) for pattern in patterns)
+    ]
+
+
+def _stack_var_name(value: Mapping[str, Any]) -> str:
+    stack_ref = _mapping(value.get("stack_ref"))
+    return str(stack_ref.get("var_name") or value.get("var_name") or "")
+
+
+def _varnode_identity(value: Mapping[str, Any]) -> tuple[str, str, int] | None:
+    address_space = str(value.get("address_space") or "")
+    address = str(value.get("address") or "").lower()
+    size = int(value.get("size_bytes") or 0)
+    if not address_space or not address or size <= 0:
+        return None
+    return address_space, address, size
+
+
+def _integer_value(value: Any, label: str) -> int:
+    if isinstance(value, bool):
+        raise CertificateError(f"{label} is not an integer")
+    if isinstance(value, int):
+        return value
+    try:
+        return int(str(value), 0)
+    except (TypeError, ValueError) as exc:
+        raise CertificateError(f"{label} is not an integer") from exc
+
+
+def _string_rows(value: Any) -> list[str]:
+    return [str(item) for item in value] if isinstance(value, list) else []
+
+
+def _deduplicated_source_refs(
+    context: CampaignContext,
+    paths: Sequence[Path],
+) -> list[dict[str, str]]:
+    refs: dict[str, dict[str, str]] = {}
+    for path in paths:
+        relative = _relative_if_contained(context.root, path)
+        refs[relative] = {
+            "path": relative,
+            "sha256": _sha256_file(path),
+            "kind": "source_review",
+        }
+    return [refs[key] for key in sorted(refs)]
+
+
 def _source_function_prefix(lines: Sequence[str], function: str, line_number: int) -> str:
     target_index = line_number - 1
     start = -1
@@ -4452,6 +6100,19 @@ def _source_function_prefix(lines: Sequence[str], function: str, line_number: in
     if start < 0:
         raise RuleNotApplicable("cannot locate the exact source function definition")
     return "\n".join(lines[start : target_index + 1])
+
+
+def _source_function_text(lines: Sequence[str], function: str, line_number: int) -> str:
+    function_pattern = re.compile(rf"\b{re.escape(function)}\s*\(")
+    for open_line, close_line in _c_brace_pairs(lines):
+        if not (open_line <= line_number <= close_line):
+            continue
+        header_start, header = _c_block_header(lines, open_line)
+        if function_pattern.search(header) and not re.search(
+            r"\b(?:if|for|while|switch)\s*\(", header
+        ):
+            return "\n".join(lines[header_start - 1 : close_line])
+    raise RuleNotApplicable("cannot locate the complete exact source function")
 
 
 def _libubox_blobmsg_contract(

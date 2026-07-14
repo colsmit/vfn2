@@ -932,6 +932,8 @@ def _indexed_state(
         "argument_roles": dict(operation.argument_roles),
         "evidence_source": operation.evidence_source,
     }
+    if operation.evidence_source == "pcode_token_use" and operation.observed_name:
+        normalized_operation["pcode"] = operation.observed_name.upper()
     indexed_function = context.index.function(operation.function_name)
     return CandidateState(
         candidate_id=candidate_id,
@@ -1099,20 +1101,26 @@ def _uninitialized_candidates(context: DiscoveryContext, index: ProgramIndex) ->
             )
             if use_line is None:
                 continue
-            indexed_use = next(
-                iter(
-                    sorted(
-                        (
-                            operation
-                            for operation in index.operations
-                            if operation.function_name == function.name
-                            and _operation_reads_local(operation, name)
-                        ),
-                        key=lambda item: abs(item.line_number - use_line),
-                    )
-                ), None
+            indexed_uses = sorted(
+                (
+                    operation
+                    for operation in index.operations
+                    if operation.function_name == function.name
+                    and _operation_reads_local(operation, name)
+                    and _address_sort_key(operation.operation_address)[0] < 2**64 - 1
+                    and not operation.evidence_source.startswith("c_text_")
+                ),
+                key=lambda item: abs(item.line_number - use_line),
             )
-            operation = indexed_use or IndexedOperation(
+            operations = indexed_uses[:1] or _exact_source_token_uses(
+                context,
+                function_name=function.name,
+                source_line=use_line,
+                token=name,
+                width=width,
+            )
+            if not operations:
+                operations = [IndexedOperation(
                     kind="load",
                     name="local_read",
                     backend="memory_access",
@@ -1126,35 +1134,99 @@ def _uninitialized_candidates(context: DiscoveryContext, index: ProgramIndex) ->
                     argument_roles=(("address", name),),
                     definedness="undefined",
                     evidence_source="c_text_definedness",
+                )]
+            for operation in operations:
+                exact_machine_operation = (
+                    _address_sort_key(operation.operation_address)[0] < 2**64 - 1
                 )
-            exact_machine_operation = _address_sort_key(operation.operation_address)[0] < 2**64 - 1
-            states.append(
-                _indexed_state(
-                    context,
-                    operation,
-                    vulnerability_type="uninitialized_memory_use",
-                    backend="memory_access",
-                    affected_identity=f"undefined:{function.address}:{name}",
-                    affected_kind="stack",
-                    source={"kind": "definedness", "expression": name},
-                    facts={
-                        "definedness": "undefined",
-                        "prior_store": False,
-                        "defined_byte_ranges": [],
-                        "undefined_byte_ranges": [[0, width]],
-                        "read_width_bytes": width,
-                    },
-                blockers=(
-                    ["machine_definedness_unresolved"]
-                    if exact_machine_operation
-                    else [
-                        "machine_definedness_unresolved",
-                        "exact_machine_operation_unresolved",
-                    ]
-                ),
-            )
-            )
+                states.append(
+                    _indexed_state(
+                        context,
+                        operation,
+                        vulnerability_type="uninitialized_memory_use",
+                        backend="memory_access",
+                        affected_identity=f"undefined:{function.address}:{name}",
+                        affected_kind="stack",
+                        source={"kind": "definedness", "expression": name},
+                        facts={
+                            "definedness": "undefined",
+                            "prior_store": False,
+                            "defined_byte_ranges": [],
+                            "undefined_byte_ranges": [[0, width]],
+                            "read_width_bytes": width,
+                        },
+                        blockers=(
+                            ["machine_definedness_unresolved"]
+                            if exact_machine_operation
+                            else [
+                                "machine_definedness_unresolved",
+                                "exact_machine_operation_unresolved",
+                            ]
+                        ),
+                    )
+                )
     return states
+
+
+def _exact_source_token_uses(
+    context: DiscoveryContext,
+    *,
+    function_name: str,
+    source_line: int,
+    token: str,
+    width: int,
+) -> list[IndexedOperation]:
+    node = next(
+        (item for item in context.nodes if item.record.name == function_name),
+        None,
+    )
+    if node is None:
+        return []
+    line_offset = int(node.record.c_line_number_offset or 0)
+    manifest_line = source_line - line_offset
+    exact_operations = {
+        (
+            str(raw.get("operation_address") or ""),
+            str(raw.get("pcode") or "").upper(),
+        )
+        for raw in node.record.pcode_operations or []
+        if str(raw.get("operation_address") or "")
+        and str(raw.get("pcode") or "")
+    }
+    token_operations = {
+        (
+            str(raw.get("operation_address") or ""),
+            str(raw.get("pcode") or "").upper(),
+        )
+        for row in node.record.c_line_addresses or []
+        if int(row.get("line_number") or 0) == manifest_line
+        for raw in row.get("token_operations", [])
+        if isinstance(raw, Mapping) and str(raw.get("token") or "") == token
+    }
+    matches = sorted(
+        token_operations & exact_operations,
+        key=lambda item: (_address_sort_key(item[0]), item[1]),
+    )
+    return [
+        IndexedOperation(
+            kind="load",
+            name="local_read",
+            backend="memory_access",
+            semantics="direct_value_use",
+            effect_kind="memory_load",
+            function_name=function_name,
+            function_address=node.record.address,
+            operation_address=address,
+            line_number=source_line,
+            arguments=(token,),
+            argument_roles=(("address", token),),
+            width_bytes=width,
+            definedness="undefined",
+            evidence_source="pcode_token_use",
+            observed_name=pcode,
+        )
+        for address, pcode in matches
+    ]
 
 
 def _uninitialized_local_declarations(lines: Sequence[str]) -> list[tuple[int, str, int]]:

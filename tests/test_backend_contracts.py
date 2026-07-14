@@ -1158,6 +1158,137 @@ def test_uninitialized_fallback_honors_unconditional_indirect_output_contract(
     )
 
 
+def test_uninitialized_fallback_emits_one_candidate_per_exact_token_use(
+    tmp_path: Path,
+) -> None:
+    export_dir = tmp_path / "decompiled"
+    export_dir.mkdir()
+    text = """// Function: main
+// Address: 0x1000
+
+void main(void) {
+  undefined8 local_90;
+  output = (local_90 >> 32) | (local_90 >> 8);
+}"""
+    (export_dir / "main.c").write_text(text)
+    base_record = _record(
+        name="main",
+        address="0x1000",
+        ordinal=0,
+        relative_path="main.c",
+        text=text,
+    )
+    record = base_record.__class__.from_dict(
+        {
+            **base_record.to_dict(),
+            "c_line_number_offset": 3,
+            "pcode_operations": [
+                {"operation_address": "0x1010", "pcode": "INT_RIGHT"},
+                {"operation_address": "0x1020", "pcode": "INT_RIGHT"},
+            ],
+            "c_line_addresses": [
+                {
+                    "line_number": 3,
+                    "addresses": ["0x1010", "0x1020"],
+                    "token_operations": [
+                        {
+                            "token": "local_90",
+                            "operation_address": "0x1010",
+                            "pcode": "INT_RIGHT",
+                        },
+                        {
+                            "token": "local_90",
+                            "operation_address": "0x1020",
+                            "pcode": "INT_RIGHT",
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+    manifest = replace(_manifest(), export_dir=str(export_dir), functions=[record])
+    (export_dir / "manifest_normalized.json").write_text(json.dumps(manifest.to_dict()))
+
+    states = discover_candidates_for_type(
+        export_dir,
+        "memory_access",
+        "uninitialized_memory_use",
+    )
+
+    assert sorted(state.operation["address"] for state in states) == ["0x1010", "0x1020"]
+    assert {state.operation["pcode"] for state in states} == {"INT_RIGHT"}
+    assert len({state.candidate_id for state in states}) == 2
+    assert all(
+        state.operation["evidence_source"] == "pcode_token_use" for state in states
+    )
+    assert all("exact_machine_operation_unresolved" not in state.blockers for state in states)
+
+
+def test_uninitialized_fallback_replaces_synthetic_indirect_import_with_exact_callind(
+    tmp_path: Path,
+) -> None:
+    export_dir = tmp_path / "decompiled"
+    export_dir.mkdir()
+    text = """// Function: main
+// Address: 0x1000
+
+void main(void) {
+  undefined8 local_48;
+  result = (*(code *)PTR_strcpy_00402000)(local_48, source);
+}"""
+    (export_dir / "main.c").write_text(text)
+    base_record = _record(
+        name="main",
+        address="0x1000",
+        ordinal=0,
+        relative_path="main.c",
+        text=text,
+    )
+    record = base_record.__class__.from_dict(
+        {
+            **base_record.to_dict(),
+            "c_line_number_offset": 3,
+            "pcode_operations": [
+                {"operation_address": "0x1010", "pcode": "CALLIND"},
+            ],
+            "c_line_addresses": [
+                {
+                    "line_number": 3,
+                    "addresses": ["0x1010"],
+                    "token_operations": [
+                        {
+                            "token": "local_48",
+                            "operation_address": "0x1010",
+                            "pcode": "CALLIND",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    manifest = replace(_manifest(), export_dir=str(export_dir), functions=[record])
+    (export_dir / "manifest_normalized.json").write_text(json.dumps(manifest.to_dict()))
+
+    states = discover_candidates_for_type(
+        export_dir,
+        "memory_access",
+        "uninitialized_memory_use",
+    )
+
+    assert len(states) == 1
+    assert states[0].operation == {
+        "name": "local_read",
+        "kind": "load",
+        "address": "0x1010",
+        "semantics": "direct_value_use",
+        "effect_kind": "memory_load",
+        "argument_roles": {"address": "local_48"},
+        "evidence_source": "pcode_token_use",
+        "pcode": "CALLIND",
+    }
+    assert "exact_machine_operation_unresolved" not in states[0].blockers
+
+
 def test_program_index_maps_adjacent_indirect_imports_by_exact_export_line(
     tmp_path: Path,
 ) -> None:

@@ -451,13 +451,11 @@ def resolve_exact_operation(
     if state.vulnerability_type in SPATIAL_TYPES:
         allowed = stores
     elif state.vulnerability_type in UNINITIALIZED_TYPES:
-        allowed = operations or [*loads, *stores, *calls]
+        allowed = [*calls, *loads, *stores, *operations]
     elif state.vulnerability_type in NULL_TYPES:
         allowed = [*loads, *stores, *calls]
     else:
         allowed = [*calls, *stores, *loads]
-    by_address = {row["address"]: row for row in allowed if row["address"]}
-
     explicit_addresses = _unique(
         _normalize_address(value)
         for value in (
@@ -467,10 +465,14 @@ def resolve_exact_operation(
         )
         if _is_numeric_address(value)
     )
-    explicit = [by_address[address] for address in explicit_addresses if address in by_address]
-    if len({row["address"] for row in explicit}) == 1:
-        row = explicit[0]
-        return _resolved_operation(state, function, row, "candidate_exact_operation_address")
+    explicit = _explicit_operation_match(state, allowed, explicit_addresses)
+    if explicit is not None:
+        return _resolved_operation(
+            state,
+            function,
+            explicit,
+            "candidate_exact_operation_address",
+        )
 
     if state.vulnerability_type in SPATIAL_TYPES:
         return_address_store = _x86_return_address_store_match(state, stores)
@@ -544,8 +546,16 @@ def resolve_exact_operation(
             semantic_line_addresses.extend(
                 _normalize_address(item) for item in _sequence(line.get("addresses"))
             )
-    matches = [by_address[address] for address in _unique(line_addresses) if address in by_address]
-    if len({row["address"] for row in matches}) == 1:
+    line_address_set = set(_unique(line_addresses))
+    matches = [row for row in allowed if str(row.get("address") or "") in line_address_set]
+    line_match = _explicit_operation_match(state, allowed, list(line_address_set))
+    if line_match is not None:
+        return _resolved_operation(state, function, line_match, "normalized_pcode_line_mapping")
+    identities = {
+        (str(row.get("address") or ""), str(row.get("pcode") or ""))
+        for row in matches
+    }
+    if len(identities) == 1:
         return _resolved_operation(state, function, matches[0], "normalized_pcode_line_mapping")
     semantic_match = _nearest_semantic_pcode_match(state, allowed, semantic_line_addresses)
     if semantic_match is not None:
@@ -974,6 +984,60 @@ def _token_operation_match(
     return matches[0]
 
 
+def _explicit_operation_match(
+    state: CandidateState,
+    rows: Sequence[Mapping[str, Any]],
+    addresses: Sequence[str],
+) -> Mapping[str, Any] | None:
+    matches = [row for row in rows if str(row.get("address") or "") in addresses]
+    if len({str(row.get("address") or "") for row in matches}) != 1:
+        return None
+    requested_pcode = str(state.operation.get("pcode") or "").upper()
+    if requested_pcode:
+        preferred = [
+            row
+            for row in matches
+            if str(row.get("pcode") or "").upper() == requested_pcode
+        ]
+        if not preferred:
+            return None
+    else:
+        kind = str(state.operation.get("kind") or state.sink.get("kind") or "").lower()
+        expected = (
+            {"CALL", "CALLIND"}
+            if "call" in kind
+            else {"STORE"}
+            if "store" in kind or "write" in kind
+            else {"LOAD"}
+            if "load" in kind or "read" in kind
+            else set()
+        )
+        preferred = [
+            row
+            for row in matches
+            if str(row.get("pcode") or "").upper() in expected
+        ]
+    # Older candidate states carried only an exact instruction address.  When
+    # their coarse sink kind has no corresponding p-code at that instruction,
+    # retain Ghidra's final operation ordering as a compatibility fallback.
+    # New exact-token states always declare ``operation.pcode`` above, and a
+    # declared call/store/load kind wins before this fallback.
+    selected = preferred or (matches[-1:] if matches else [])
+    identities = {
+        (str(row.get("address") or ""), str(row.get("pcode") or ""))
+        for row in selected
+    }
+    if len(identities) != 1:
+        return None
+    address, pcode = next(iter(identities))
+    return next(
+        row
+        for row in selected
+        if str(row.get("address") or "") == address
+        and str(row.get("pcode") or "") == pcode
+    )
+
+
 def _line_token_pcode_match(
     line_rows: Sequence[Mapping[str, Any]],
     operations: Sequence[Mapping[str, Any]],
@@ -1070,12 +1134,36 @@ def _interprocedural_store_match(
     static = _mapping(state.type_facts.get("static_candidate"))
     if not str(static.get("kind") or "").startswith("interprocedural_"):
         return None
+    explicit_addresses = {
+        _normalize_address(value)
+        for value in (
+            state.sink.get("operation_address"),
+            state.operation.get("operation_address"),
+            state.operation.get("address"),
+        )
+        if _is_numeric_address(value)
+    }
+    propagated_address = _normalize_address(static.get("operation_address"))
+    if propagated_address and explicit_addresses == {propagated_address}:
+        propagated_matches = [
+            (function, row)
+            for function in functions
+            for row in _normalized_pcode_rows(function, "pcode_stores", "STORE")
+            if str(row.get("address") or "") == propagated_address
+        ]
+        if len(propagated_matches) == 1:
+            return propagated_matches[0]
     callee_names = set(re.findall(r"\bFUN_[0-9A-Fa-f]+\b", str(state.location.get("line_text") or "")))
     callees = [function for function in functions if str(function.get("name") or "") in callee_names]
     if len(callees) != 1:
         return None
     callee = callees[0]
     stores = _normalized_pcode_rows(callee, "pcode_stores", "STORE")
+    explicit_matches = [
+        row for row in stores if str(row.get("address") or "") in explicit_addresses
+    ]
+    if len({str(row.get("address") or "") for row in explicit_matches}) == 1:
+        return callee, explicit_matches[0]
     offset_expr = str(static.get("offset_expr") or "")
     offset_identifiers = set(re.findall(r"\b[A-Za-z_]\w*\b", offset_expr))
     offset_constants = {int(item) for item in re.findall(r"(?<![A-Za-z_])-?\d+", offset_expr)}
