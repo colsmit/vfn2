@@ -9,6 +9,7 @@ import pytest
 from binary_agent import adjudication as adjudication_module
 from binary_agent import adjudication_certificates as checker_module
 from binary_agent.adjudication import sha256_file
+from binary_agent.adjudication_autoprove import run_autoprove
 from binary_agent.adjudication_investigation import (
     ExternalCommandInvestigationProvider,
     InvestigationError,
@@ -707,3 +708,32 @@ def test_investigation_stage_escalates_unverified_direct_proposal_to_agent(
     assert result.agent_attempt_count == 1
     assert result.residual_candidate_ids == (candidate_id,)
     assert result.verified == {}
+
+
+def test_autoprove_admits_cfg_infeasible_semantic_certificate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, _source, _pack_path, pack = _null_campaign(
+        tmp_path,
+        monkeypatch,
+        body_lines=[
+            "    struct record *fresh;",
+            "    struct record other = {0};",
+            "    fresh = calloc(1, sizeof(*fresh));",
+            "    memcpy(&fresh->copy, &other.copy, sizeof(other.copy));",
+            "    fresh->flag = 1;",
+        ],
+        candidate_body_line=5,
+    )
+
+    result = run_autoprove(root, admit=True)
+
+    assert result.proven_candidates == 1
+    assert result.residual_candidates == 0
+    review = json.loads(next((root / "reviews").glob("*.json")).read_text())
+    decision = review["decisions"][0]
+    assert decision["candidate_id"] == pack["candidate_id"]
+    assert decision["decision"] == "not_bug"
+    assert decision["basis"] == "cfg_smt_path_infeasible"
+    assert any(ref["kind"] == "cfg_smt_proof" for ref in decision["evidence_refs"])

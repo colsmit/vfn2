@@ -22,8 +22,8 @@ The main demonstration is a clean rerun of the frozen 218-candidate OpenWrt camp
 - [x] (2026-07-14 17:18Z) Added campaign-level root grouping and a generic semantic-investigation certificate. Certificate checking reloads the hashed pack and proposal, reruns the semantic verifier, and compares the complete verified payload; provider prose cannot alter a checked proof.
 - [x] (2026-07-14 17:24Z) Integrated deterministic/direct/agent investigation tiers with autoprove and review rendering, added CLI provider commands/timeouts/call caps, and deleted both source-specific OpenWrt positive rules and their exact-line test.
 - [x] (2026-07-14 17:29Z) Ran the existing frozen campaign unattended under tool run `59597ef9ac95293a`: 218 certificates, zero residuals, two semantic bug rows, one semantic `not_bug` row, one root group, one nearby allocation defect, and no model calls. An independent check re-derived all 218 certificates.
-- [ ] Finish adversarial tests and holdout examples (completed: renamed/shifted spatial pair, guarded spatial variant, first/later null dereferences, proposal tamper, provider escalation; remaining: clean copied-campaign acceptance and any regressions exposed by the full suite).
-- [ ] Rerun all 218 OpenWrt candidates unattended from a clean prepared campaign twice and verify identical corrected results.
+- [x] (2026-07-14 18:04Z) Finished adversarial and holdout coverage for renamed/shifted spatial stores, a guarded spatial variant, first/later null dereferences, proposal and certificate tampering, provider escalation, CFG-proof admission, and relocatable absolute DWARF paths.
+- [x] (2026-07-14 18:01Z) Created `.ai/runs/openwrt-four-binary-adjudication-autonomous-acceptance` from frozen inputs with no reviews or generated decisions. One unattended pass admitted all 109 units and independently rechecked all 218 certificates. Finalization twice produced byte-identical hashes: ledger `e43451e6303d63bfe2daa6274e525947b5bf7ee8d3a808b0d33dfd8d220fb04f`, derived states `5804d22a799b46264534d3f1a27ec17905f726ee8401288e6f8f43a70082a8ea`, reports `a435f4bf016a64915bfba75714b9f2b59a0996e3ea04485ca0fb80a99a7a4cb2`, summary `52173b5c61810e85a31bf3d321b37df67a66c959d08756580cbb57fc89b2fc15`, and root groups `c433a973b5f1fcaae308d1dd8ec4bda928a014a9fffecae06e1a0d00bfa47814`.
 - [ ] Run the full repository verification commands and publish the completed milestone.
 
 ## Surprises & Discoveries
@@ -45,6 +45,12 @@ The main demonstration is a clean rerun of the frozen 218-candidate OpenWrt camp
 
 - Observation: exact symbol layout resolves the downstream-path ambiguity without replay.
   Evidence: the exact-code reference binary reports the 4096-byte pathname array immediately followed by a 200-byte static object. The second STORE can execute after the first one-past write; the default nonempty index list, signed-to-unsigned comparison, copy, and failing `stat` path are all present in hashed source.
+
+- Observation: exact reference binaries are portable, but their DWARF file names can contain the absolute path of the build campaign.
+  Evidence: the first clean copy stopped when a list-helper frame named the original campaign. The checker now relocates the longest existing path suffix below the copied campaign and still hashes the relocated file; a regression test covers this behavior.
+
+- Observation: semantic certificates need evidence kinds based on the admitted basis, not on the implementation language of the verifier.
+  Evidence: the clean run rejected the corrected null row until its generic certificate reference was classified as `cfg_smt_proof` rather than `source_review`. Basis-to-kind mapping is now explicit and tested through review admission.
 
 ## Decision Log
 
@@ -74,7 +80,7 @@ The main demonstration is a clean rerun of the frozen 218-candidate OpenWrt camp
 
 ## Outcomes & Retrospective
 
-The plan has begun. The current outcome is an architectural audit and a precise replacement milestone. No new autonomous decisions are admitted yet, and the existing 215/3 OpenWrt ledger remains historically reproducible but semantically superseded by the corrected target described above.
+The autonomous stage is implemented and accepted on the frozen 218-candidate campaign. It produced 2 `bug` and 216 `not_bug` rows, zero residuals, one grouped path defect, one nearby unchecked-allocation defect, and zero schema-v2 vulnerability reports. No direct-model or coding-agent call was needed for this inventory because the deterministic tier proved all three former residuals; those provider tiers remain available and bounded for future binaries.
 
 ## Context and Orientation
 

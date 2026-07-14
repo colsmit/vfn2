@@ -580,7 +580,7 @@ def _derive_libubox_list_store(context: CampaignContext) -> dict[str, Any]:
     )
     if helper_frame is None:
         raise RuleNotApplicable("reference DWARF does not map the STORE to a typed list helper")
-    source_path = _contained_file(
+    source_path = _resolve_campaign_frame_file(
         context.root,
         str(helper_frame.get("path") or ""),
         "libubox list source",
@@ -4166,6 +4166,32 @@ def _resolve_frame_source(source_root: Path, value: str) -> Path | None:
     return None
 
 
+def _resolve_campaign_frame_file(root: Path, value: str, label: str) -> Path:
+    """Relocate an absolute DWARF build path into a copied campaign tree."""
+
+    campaign_root = root.resolve()
+    raw = Path(value)
+    if raw.is_absolute():
+        resolved = raw.resolve()
+        try:
+            resolved.relative_to(campaign_root)
+        except ValueError:
+            pass
+        else:
+            if resolved.is_file():
+                return resolved
+    parts = raw.parts[1:] if raw.is_absolute() else raw.parts
+    for index in range(len(parts)):
+        candidate = campaign_root.joinpath(*parts[index:]).resolve()
+        try:
+            candidate.relative_to(campaign_root)
+        except ValueError:
+            continue
+        if candidate.is_file():
+            return candidate
+    raise CertificateError(f"{label} cannot be relocated inside the campaign: {value}")
+
+
 def _git_head(source_root: Path) -> str:
     try:
         result = subprocess.run(
@@ -4537,7 +4563,10 @@ def _normalized_frame_path(root: Path, value: str) -> str:
     path = Path(value)
     if not path.is_absolute():
         return value
-    return _relative_if_contained(root, path)
+    return _relative_if_contained(
+        root,
+        _resolve_campaign_frame_file(root, value, "DWARF frame source"),
+    )
 
 
 def _sha256_file(path: Path) -> str:

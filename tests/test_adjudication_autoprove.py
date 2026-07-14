@@ -1121,6 +1121,21 @@ def test_source_proven_bug_stays_separate_from_report_gate(
         check_certificate(root, certificate_path)
 
 
+def test_absolute_dwarf_path_relocates_inside_copied_campaign(tmp_path: Path) -> None:
+    root = tmp_path / "copied-campaign"
+    relocated = root / "sdk" / "tree" / "include" / "list.h"
+    relocated.parent.mkdir(parents=True)
+    relocated.write_text("struct list_head { void *next; void *prev; };\n")
+
+    resolved = checker_module._resolve_campaign_frame_file(
+        root,
+        "/old/research/campaign/sdk/tree/include/list.h",
+        "test DWARF source",
+    )
+
+    assert resolved == relocated.resolve()
+
+
 def _add_fake_reference_mapping(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     sdk_archive = root / "sdk" / "fake-sdk.tar.zst"
     sdk_archive.parent.mkdir(parents=True)

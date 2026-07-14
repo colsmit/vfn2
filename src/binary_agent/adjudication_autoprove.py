@@ -262,7 +262,15 @@ def run_autoprove(
             certificates[candidate_id] = {
                 "path": str(certificate_path.relative_to(root)),
                 "sha256": certificate_hash,
-                "kind": "source_review",
+                "kind": {
+                    "exact_source_feasible_violation": "source_review",
+                    "source_proves_safety": "source_review",
+                    "cfg_smt_path_infeasible": "cfg_smt_proof",
+                    "verified_modeling_error": "analyzer_model_refutation",
+                    "intentional_no_boundary": "trust_boundary_review",
+                    "unreachable_all_entries": "reachability_proof",
+                    "exhaustive_finite_dynamic": "finite_enumeration",
+                }[str(reference.get("basis") or "")],
                 "rule_id": SEMANTIC_INVESTIGATION_RULE,
             }
             proofs[candidate_id] = proof
