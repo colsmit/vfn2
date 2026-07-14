@@ -27,7 +27,7 @@ The observable outcome is a campaign below `.ai/runs/openwrt-more-binaries-v1` w
 - [x] (2026-07-14 18:42Z) Extended the libubox table-initialization proof across a static helper parameter and its unique caller. It proved 48 additional candidates across bonding, bridge, veth, vlandev, macvlan, and VRF helpers. The authoritative run now has 349 independently checked `not_bug` certificates, 822 residuals, 108 complete units, and 63 partial units.
 - [ ] Continue resolving the 822 residuals by general semantic cluster. The largest current clusters are BusyBox spatial writes and definite-assignment claims, plus 99 remaining `netifd` definite-assignment candidates. Direct-model and coding-agent providers remain unavailable in this environment, so no provider output has authorized a decision.
 - [x] (2026-07-14 18:53Z) Completed repository-wide validation: 985 tests passed and five skipped; `compileall` succeeded; `pip check` reported no broken requirements. The final independent campaign check reproduced all 349 certificates and 822 residuals.
-- [ ] Commit and publish this milestone. Do not emit a final 1,171-row ledger while 822 rows lack affirmative proof.
+- [x] (2026-07-14 18:56Z) Committed and published the milestone to `origin/main` as `b4b2637`. No generated run artifact was committed. Do not emit a final 1,171-row ledger while 822 rows lack affirmative proof.
 
 ## Surprises & Discoveries
 
