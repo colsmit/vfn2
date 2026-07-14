@@ -38,6 +38,9 @@ The observable outcome is a campaign below `.ai/runs/openwrt-more-binaries-v1` w
 - [x] (2026-07-14 21:18Z) Corrected admission-summary idempotence discovered during the first sibling rerun. `admitted_unit_count` now describes the resulting admitted state and existing reviews are revalidated and normalized, rather than reporting only files newly written by one invocation.
 - [x] (2026-07-14 21:32Z) Preserved separately authored valid reviews during idempotent admission, added a regression test, and froze authoritative current-tool-hash campaign `.ai/runs/openwrt-more-binaries-v1/exact-machine-campaign-v6`. Two admitted runs and a fresh independent check reproduce 308 certificates, 668 residuals, and 91 admitted units with identical artifact hashes.
 - [x] (2026-07-14 21:34Z) Completed repository-wide validation after the review-preservation regression: 1,017 tests passed and five skipped; `compileall` succeeded; `pip check` reported no broken requirements. Removed generated repository bytecode caches afterward.
+- [x] (2026-07-14 22:19Z) Corrected the only Python 3.10 CI incompatibility by computing lifetime-token normalization before its f-string. Python 3.10.20 now compiles the entire tree and passes the 117 focused backend/corpus tests.
+- [x] (2026-07-14 22:19Z) Froze authoritative current-tool-hash campaign `.ai/runs/openwrt-more-binaries-v1/exact-machine-campaign-v7`. Two admitted runs are byte-identical across summary, residual, certificate, and review artifacts; a fresh independent check reproduces 308 certificates, 668 residuals, and 91 admitted units.
+- [x] (2026-07-14 22:19Z) Repeated repository-wide validation after the compatibility correction: 1,017 tests passed and five skipped; `compileall` succeeded under both Python 3.10.20 and the project Python 3.12.3; `pip check` reported no broken requirements.
 - [ ] Publish the completed iteration to draft PR #1 and independently audit the pushed state.
 - [x] (2026-07-14 20:15Z) Completed repository-wide validation: 1,007 tests passed and five skipped; `compileall` succeeded; `pip check` reported no broken requirements. The independent campaign check reproduced all 259 certificates and 717 residuals.
 - [x] (2026-07-14 18:56Z) Committed and published the earlier 1,171-record milestone to `origin/main` as `b4b2637`. No generated run artifact was committed; that superseded campaign correctly emitted no final ledger while 822 rows lacked affirmative proof.
@@ -159,7 +162,7 @@ The observable outcome is a campaign below `.ai/runs/openwrt-more-binaries-v1` w
 
 ## Outcomes & Retrospective
 
-The milestone remains in progress, but the three selected high-value clusters are complete. Campaign v6 independently reproduces 308 certificates over the unchanged 976-candidate inventory: 307 affirmative `not_bug` decisions and one real source-proven bug. General rules resolved 49 rows beyond v3: 27 additional blobmsg table rows, 16 additional checked stat-family rows, seven output-address modeling errors, and the allocator bug, offset by two rows that moved from a later array-object rule to the more exact output-address rule. This is 31.6% checked coverage, up from 26.5%, with no candidate-ID exceptions.
+The milestone remains in progress pending publication audit, but the three selected high-value clusters are complete. Campaign v7 independently reproduces 308 certificates over the unchanged 976-candidate inventory: 307 affirmative `not_bug` decisions and one real source-proven bug. General rules resolved 49 rows beyond v3: 27 additional blobmsg table rows, 16 additional checked stat-family rows, seven output-address modeling errors, and the allocator bug, offset by two rows that moved from a later array-object rule to the more exact output-address rule. This is 31.6% checked coverage, up from 26.5%, with no candidate-ID exceptions.
 
 No exhaustive ledger is emitted because 668 rows still lack affirmative proof. The bug is not a published vulnerability: it is an unchecked low-memory failure in a registered control-plane path, and the dynamic schema-v2 report gate remains unsatisfied. The main lessons are that source invariants need compiled object identity, stripped callback reachability can be recovered from registered data structures, and deterministic automation includes idempotent artifact state as well as deterministic decisions.
 
@@ -169,7 +172,7 @@ Core code lives under `src/binary_agent`. `src/binary_agent/adjudication.py` cop
 
 A campaign context is the immutable evidence needed to evaluate one candidate: the frozen campaign manifest, candidate state, exact operation binding, shipped binary, and normalized Ghidra export. The normalized export can be hundreds of megabytes because it includes every recovered function and p-code operation. A campaign context index in this plan means a stage-local object that verifies each frozen file hash once, parses each shared JSON file once, indexes candidates by ID, and returns candidate-specific immutable views. It is not a global cache and must not survive across commands or conceal file mutations from a later independent check.
 
-The research artifacts live below `.ai/runs/openwrt-more-binaries-v1` and are intentionally ignored by Git. The shipped binaries come from the extracted OpenWrt root filesystem at `.ai/runs/firmware-campaigns/20260712-232226/images/openwrt-24.10.4-x86-64-rootfs/rootfs`. The normalized exports live in the SHA-keyed cache under `.ai/runs/firmware-campaigns/cache/decomp`. The current immutable campaign root is `.ai/runs/openwrt-more-binaries-v1/exact-machine-campaign-v6`, prepared from the unchanged v3 input hashes with current checker/generator hashes. Earlier `lifetime-fixed`, `exact-token-fixed`, `pcode-disambiguated`, v3, and superseded v4/v5 campaigns remain reproducibility evidence and are not authoritative.
+The research artifacts live below `.ai/runs/openwrt-more-binaries-v1` and are intentionally ignored by Git. The shipped binaries come from the extracted OpenWrt root filesystem at `.ai/runs/firmware-campaigns/20260712-232226/images/openwrt-24.10.4-x86-64-rootfs/rootfs`. The normalized exports live in the SHA-keyed cache under `.ai/runs/firmware-campaigns/cache/decomp`. The current immutable campaign root is `.ai/runs/openwrt-more-binaries-v1/exact-machine-campaign-v7`, prepared from the unchanged v3 input hashes with current checker/generator hashes. Earlier `lifetime-fixed`, `exact-token-fixed`, `pcode-disambiguated`, v3, and superseded v4/v5/v6 campaigns remain reproducibility evidence and are not authoritative.
 
 The selected package source commits are `bba95191ff2f22c9118a1ba1355b83afaa277ae3` for `rpcd` and `7901e66c5f273bceee8981bc8a0c8b0e60945f60` for `netifd`. BusyBox is OpenWrt's patched 1.36.1-r2 package, so its eventual reference mapping must cover both the upstream source and the exact OpenWrt patch/configuration set. The official SDK and OpenWrt buildroot already exist below `.ai/runs/openwrt-four-binary-adjudication-v1`; reuse verified bytes but copy or reference them only within `.ai/runs`.
 
@@ -181,7 +184,7 @@ Next, modify `run_autoprove` in `src/binary_agent/adjudication_autoprove.py` to 
 
 Add focused tests in `tests/test_adjudication_autoprove.py`. Instrument JSON loading or use a small fake campaign to assert that a multi-candidate same-binary batch parses its export once. Mutate a frozen input before index construction and require rejection. Ensure an unknown candidate and a candidate from another binary cannot receive the wrong state, binding, or export. Ensure a normal one-certificate `check_certificate` still notices post-run tampering. Record a benchmark from the 1,181-candidate campaign.
 
-The context optimization, source builds, corrected rediscovery, exact opcode binding, lifetime refutation, function-fingerprint mapping, blobmsg/stat-family contracts, callback recovery, and idempotent admission are complete. Continue from authoritative residual run `ed205d0fd2dc89b1` in `exact-machine-campaign-v6`. Cluster rows by binary, source-bound function, vulnerability class, and exact p-code opcode. The next largest complete semantic units are nine BusyBox uninitialized rows each in `FUN_0040a71c`, `FUN_00414f83`, and `FUN_00412b3e`, followed by eight in `FUN_00410f12`. Before adding a rule, recover the exact source function, compiled object, and all reaching paths, then require the proof to reject an unsafe counterexample fixture.
+The context optimization, source builds, corrected rediscovery, exact opcode binding, lifetime refutation, function-fingerprint mapping, blobmsg/stat-family contracts, callback recovery, and idempotent admission are complete. Continue from authoritative residual run `ed205d0fd2dc89b1` in `exact-machine-campaign-v7`. Cluster rows by binary, source-bound function, vulnerability class, and exact p-code opcode. The next largest complete semantic units are nine BusyBox uninitialized rows each in `FUN_0040a71c`, `FUN_00414f83`, and `FUN_00412b3e`, followed by eight in `FUN_00410f12`. Before adding a rule, recover the exact source function, compiled object, and all reaching paths, then require the proof to reject an unsafe counterexample fixture.
 
 Extend deterministic rules only when a source structure gives a conservative reusable proof. Do not restore the removed Ghidra CAST/INDIRECT counts unless the candidate's own frozen p-code identity is CAST or INDIRECT. Use direct-model or coding-agent tiers only after provider credentials or tools exist, and keep their proposals untrusted until the existing verifier accepts exact evidence.
 
@@ -197,8 +200,8 @@ Run focused loader and certificate tests while implementing:
 
 Rerun and independently check the current immutable campaign:
 
-    PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m binary_agent.cli.run_adjudication_autoprove run --admit .ai/runs/openwrt-more-binaries-v1/exact-machine-campaign-v6
-    PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m binary_agent.cli.run_adjudication_autoprove check .ai/runs/openwrt-more-binaries-v1/exact-machine-campaign-v6
+    PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m binary_agent.cli.run_adjudication_autoprove run --admit .ai/runs/openwrt-more-binaries-v1/exact-machine-campaign-v7
+    PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m binary_agent.cli.run_adjudication_autoprove check .ai/runs/openwrt-more-binaries-v1/exact-machine-campaign-v7
 
 The command must complete in minutes rather than hours, and `candidate_count` must remain 976. The current expected result is 308 checked certificates, 668 residuals, 91 complete/admitted units, and run ID `ed205d0fd2dc89b1`; `check` must reproduce all certificate counts. A second unchanged `run --admit` must preserve exact summary, residual, certificate-tree, and review-tree hashes.
 
@@ -251,9 +254,9 @@ The superseded v3 source-backed exact-operation run showed:
     run time / peak RSS: 2:49.80 / 1,040,404 KiB
     independent check: 259 certificates, 717 residuals, 0:37.66
 
-The current v6 cluster-resolution run shows:
+The current v7 cluster-resolution run shows:
 
-    frozen manifest SHA-256: beffc6f8118218e584e47f5b78742ed642937ea5220e16d2675b206add59ccc0
+    frozen manifest SHA-256: 67c8745953428cab50d355741916529a504a6a15972ecee30741e1845978f128
     authoritative run ID: ed205d0fd2dc89b1
     checked decisions: 307 not_bug, 1 bug
     residual candidates: 668
@@ -263,10 +266,10 @@ The current v6 cluster-resolution run shows:
     checked stat-family certificates: 32
     stat output-address modeling errors: 7
     unchecked calloc_a output bugs: 1
-    summary SHA-256: b44503dd81df0aa28ff2864b6e47424531602b7a1855dfc9055bc9cd5975be5a
-    residual SHA-256: b802db99e3d5329779e8b510489bc359f8b3629f4f47a4d963d98f346c675108
-    certificate-tree SHA-256: 34348699b7d06d67e77706c0e0b593ddb32d14c6ee6c2e2cc7f7a3432236cb74
-    review-tree SHA-256: b8bb3d45b52608d6f3efe7702fc97ee7e441501346a8b77dea5bf765b4a7795a
+    summary SHA-256: 791e37a8f3c9ac78967edb1c7ce8ace82c3710da2eea9b863089b0ccb59c0d06
+    residual SHA-256: f14c2fd390169a5a2bd717c941d2cff5911372b50c2bcb03ec41e7afda46a92b
+    certificate-tree SHA-256: 1c1ddee041515ec7c79ff13cc1bccf15dbc82f0dc4d22652920feda29ad3d016
+    review-tree SHA-256: db9b8c0af74d5e808f2ea2820ab34a9a3df26addba155459eef4347ad5391017
     repeated run: all four hashes identical
     independent check: 308 certificates, 668 residuals
 
@@ -297,3 +300,5 @@ Revision note (2026-07-14 21:19Z): completed the three selected residual cluster
 Revision note (2026-07-14 21:34Z): recorded final local verification of 1,017 passing tests, five skips, successful compilation, dependency consistency, and repository cache cleanup before publication.
 
 Revision note (2026-07-14 21:32Z): hardened idempotent admission to preserve separately authored valid reviews and superseded v5 with current-tool-hash campaign v6. Recorded the v6 run ID, manifest hash, byte-identical repeat hashes, and independent 308/668 partition check.
+
+Revision note (2026-07-14 22:19Z): corrected the Python 3.10 discovery syntax exposed by draft-PR CI, superseded v6 with current-tool-hash campaign v7, and recorded its byte-identical rerun, fresh independent 308/668 check, and repository-wide validation.

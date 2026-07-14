@@ -759,7 +759,8 @@ def _enrich_lifetime_state(state: CandidateState, index: ProgramIndex) -> Candid
     function_address = str(state.location.get("address") or "")
     if not token or not function_name:
         return state
-    resource_identity = f"{function_address}:{re.sub(r'\s+', '', token).lower()}"
+    normalized_token = re.sub(r"\s+", "", token).lower()
+    resource_identity = f"{function_address}:{normalized_token}"
     events = [
         event
         for event in index.lifecycle_events
