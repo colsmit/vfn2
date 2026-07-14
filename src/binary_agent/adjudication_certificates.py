@@ -34,8 +34,10 @@ C_ASSIGNMENT_RULE = "c_unconditional_assignment_before_use_v1"
 C_IMMEDIATE_ASSIGNMENT_RULE = "c_immediate_unconditional_assignment_v1"
 C_DECLARATION_INIT_RULE = "c_declaration_initializer_v1"
 LIBUBOX_CALLOC_INIT_RULE = "libubox_checked_calloc_a_outputs_v1"
+LIBUBOX_UNCHECKED_CALLOC_BUG_RULE = "libubox_unchecked_calloc_a_output_v1"
 LIBUBOX_FOREACH_INIT_RULE = "libubox_foreach_macro_initializes_v1"
 C_CHECKED_API_OUTPUT_RULE = "c_checked_api_output_initialization_v1"
+C_API_OUTPUT_ADDRESS_RULE = "c_api_output_address_not_read_v1"
 C_GUARDED_POINTER_RULE = "c_dominating_nonnull_guard_v1"
 C_ARRAY_OBJECT_RULE = "c_array_object_nonnull_v1"
 C_READ_TERMINATOR_RULE = "c_read_terminator_bounds_v1"
@@ -88,7 +90,9 @@ REGISTERED_RULES = (
     C_IMMEDIATE_ASSIGNMENT_RULE,
     C_DECLARATION_INIT_RULE,
     LIBUBOX_CALLOC_INIT_RULE,
+    LIBUBOX_UNCHECKED_CALLOC_BUG_RULE,
     LIBUBOX_FOREACH_INIT_RULE,
+    C_API_OUTPUT_ADDRESS_RULE,
     C_CHECKED_API_OUTPUT_RULE,
     C_GUARDED_POINTER_RULE,
     C_ARRAY_OBJECT_RULE,
@@ -142,7 +146,9 @@ RULE_BASES = {
     C_IMMEDIATE_ASSIGNMENT_RULE: "source_proves_safety",
     C_DECLARATION_INIT_RULE: "source_proves_safety",
     LIBUBOX_CALLOC_INIT_RULE: "source_proves_safety",
+    LIBUBOX_UNCHECKED_CALLOC_BUG_RULE: "exact_source_feasible_violation",
     LIBUBOX_FOREACH_INIT_RULE: "source_proves_safety",
+    C_API_OUTPUT_ADDRESS_RULE: "verified_modeling_error",
     C_CHECKED_API_OUTPUT_RULE: "source_proves_safety",
     C_GUARDED_POINTER_RULE: "source_proves_safety",
     C_ARRAY_OBJECT_RULE: "source_proves_safety",
@@ -503,8 +509,12 @@ def derive_rule_proof(context: CampaignContext, rule_id: str) -> dict[str, Any]:
         return _derive_c_declaration_initializer(context)
     if rule_id == LIBUBOX_CALLOC_INIT_RULE:
         return _derive_libubox_checked_calloc_outputs(context)
+    if rule_id == LIBUBOX_UNCHECKED_CALLOC_BUG_RULE:
+        return _derive_libubox_unchecked_calloc_output(context)
     if rule_id == LIBUBOX_FOREACH_INIT_RULE:
         return _derive_libubox_foreach_initialization(context)
+    if rule_id == C_API_OUTPUT_ADDRESS_RULE:
+        return _derive_c_api_output_address(context)
     if rule_id == C_CHECKED_API_OUTPUT_RULE:
         return _derive_c_checked_api_output(context)
     if rule_id == C_GUARDED_POINTER_RULE:
@@ -1172,7 +1182,26 @@ def _derive_c_realloc_nonstack_object(context: CampaignContext) -> dict[str, Any
 def _derive_libubox_blobmsg_initialization(context: CampaignContext) -> dict[str, Any]:
     if str(context.state.get("vulnerability_type") or "") != "uninitialized_memory_use":
         raise RuleNotApplicable("candidate is not an uninitialized-use candidate")
-    source = _exact_source_context(context)
+    if (
+        str(context.binding.get("status") or "") != "resolved"
+        or not str(context.binding.get("address") or "")
+        or not str(context.binding.get("pcode") or "")
+    ):
+        raise RuleNotApplicable("candidate has no resolved exact binary operation")
+    source_contexts = _source_contexts_for_operation(
+        context, str(context.binding.get("address") or "")
+    )
+    source = source_contexts[0]
+    for candidate_source in source_contexts:
+        candidate_frame = _mapping(candidate_source.get("frame"))
+        candidate_lines = candidate_source["lines"]
+        candidate_line = int(candidate_frame.get("line") or 0)
+        candidate_statement = candidate_lines[candidate_line - 1].strip()
+        if re.search(r"\btb\b", candidate_statement) or _enclosing_blobmsg_table_alias(
+            candidate_lines, candidate_line, candidate_statement
+        ) is not None:
+            source = candidate_source
+            break
     frame = source["frame"]
     lines = source["lines"]
     line_number = int(frame["line"])
@@ -1181,6 +1210,9 @@ def _derive_libubox_blobmsg_initialization(context: CampaignContext) -> dict[str
     function_prefix = _source_function_prefix(lines, function_name, line_number)
     macro_line: int | None = None
     reads_table = re.search(r"\btb\b", statement) is not None
+    guarded_alias = _enclosing_blobmsg_table_alias(lines, line_number, statement)
+    if guarded_alias is not None:
+        reads_table = True
     macro_call = re.match(r"(?P<name>[A-Za-z_]\w*)\s*\(", statement)
     if not reads_table and macro_call is not None:
         definition = re.compile(
@@ -1215,18 +1247,29 @@ def _derive_libubox_blobmsg_initialization(context: CampaignContext) -> dict[str
             statement=statement,
             macro_line=macro_line,
         )
-    array_declarations = list(
+    declaration_statements = list(
         re.finditer(
-            r"struct\s+blob_attr\s*\*\s*tb\s*\[\s*(?P<count>(?:[A-Za-z_]\w*|\d+))\s*\]\s*;",
+            r"struct\s+blob_attr\s+(?P<declarators>[^;]+)\s*;",
             function_prefix,
         )
     )
-    scalar_declarations = list(
-        re.finditer(r"struct\s+blob_attr\s*\*\s*tb\s*;", function_prefix)
-    )
+    array_declarations: list[tuple[re.Match[str], re.Match[str]]] = []
+    scalar_declarations: list[re.Match[str]] = []
+    for declaration_statement in declaration_statements:
+        declarators = declaration_statement.group("declarators")
+        array = re.search(
+            r"(?:^|,)\s*\*\s*tb\s*\[\s*"
+            r"(?P<count>(?:[A-Za-z_]\w*|\d+))\s*\]",
+            declarators,
+        )
+        if array is not None:
+            array_declarations.append((declaration_statement, array))
+            continue
+        if re.search(r"(?:^|,)\s*\*\s*tb\s*(?=,|$)", declarators):
+            scalar_declarations.append(declaration_statement)
     if array_declarations:
-        declaration = array_declarations[-1]
-        count_name = declaration.group("count")
+        declaration, array_declaration = array_declarations[-1]
+        count_name = array_declaration.group("count")
         expected_table_argument = "tb"
     elif scalar_declarations:
         declaration = scalar_declarations[-1]
@@ -1270,7 +1313,16 @@ def _derive_libubox_blobmsg_initialization(context: CampaignContext) -> dict[str
         context,
         source,
         source_function=str(frame["function"]),
-        source_lines=[line_number],
+        source_lines=sorted(
+            {
+                line_number,
+                *(
+                    [int(guarded_alias["guard_line"])]
+                    if guarded_alias is not None
+                    else []
+                ),
+            }
+        ),
     )
     return {
         "rule_claim": "blobmsg_parse zero-initializes every table slot before parsing or returning",
@@ -1285,6 +1337,11 @@ def _derive_libubox_blobmsg_initialization(context: CampaignContext) -> dict[str
             "table": "tb",
             "element_count": count_name,
             "parser_count_expression": count_expression,
+            "table_access": (
+                dict(guarded_alias)
+                if guarded_alias is not None
+                else {"kind": "direct_table_read", "line": line_number}
+            ),
         },
         "dependency_contract": dependency,
         "additional_source_refs": [
@@ -1303,6 +1360,72 @@ def _derive_libubox_blobmsg_initialization(context: CampaignContext) -> dict[str
             "all_path_initialization": True,
         },
     }
+
+
+def _enclosing_blobmsg_table_alias(
+    lines: Sequence[str], line_number: int, statement: str
+) -> dict[str, Any] | None:
+    """Find an unconditional ``cur = tb[index]`` assignment guarding a use.
+
+    The assignment must be the first evaluated expression in a braced ``if``
+    condition.  This excludes short-circuit prefixes that could enter the block
+    without assigning the alias.
+    """
+
+    candidates: list[dict[str, Any]] = []
+    pattern = re.compile(
+        r"\bif\s*\(\s*\(\s*(?P<alias>[A-Za-z_]\w*)\s*=\s*"
+        r"tb\s*\[\s*(?P<index>[^\]]+)\s*\]\s*\)\s*"
+        r"(?:(?P<comparison>==|!=)\s*(?:NULL|0)\b)?\s*\)",
+        re.DOTALL,
+    )
+    for open_line, close_line in _c_brace_pairs(lines):
+        if not (open_line < line_number <= close_line):
+            continue
+        header_start, header = _c_block_header(lines, open_line)
+        match = pattern.search(header)
+        if match is None or re.search(rf"\b{re.escape(match.group('alias'))}\b", statement) is None:
+            continue
+        candidates.append(
+            {
+                "kind": "enclosing_table_alias_assignment",
+                "alias": match.group("alias"),
+                "table_index": " ".join(match.group("index").split()),
+                "comparison": match.group("comparison") or "truthy",
+                "guard_line": header_start,
+                "block_end_line": close_line,
+                "guard": " ".join(header.split()),
+            }
+        )
+    previous_line = line_number - 1
+    while previous_line > 0 and not lines[previous_line - 1].strip():
+        previous_line -= 1
+    if previous_line > 0:
+        for header_start in range(previous_line, max(0, previous_line - 4), -1):
+            header = "\n".join(lines[header_start - 1 : previous_line])
+            match = pattern.search(header)
+            if (
+                match is None
+                or "{" in header
+                or ";" in header
+                or re.search(rf"\b{re.escape(match.group('alias'))}\b", statement) is None
+            ):
+                continue
+            candidates.append(
+                {
+                    "kind": "unbraced_table_alias_assignment",
+                    "alias": match.group("alias"),
+                    "table_index": " ".join(match.group("index").split()),
+                    "comparison": match.group("comparison") or "truthy",
+                    "guard_line": header_start,
+                    "block_end_line": line_number,
+                    "guard": " ".join(header.split()),
+                }
+            )
+            break
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: int(item["guard_line"]))
 
 
 def _derive_c_unconditional_assignment(context: CampaignContext) -> dict[str, Any]:
@@ -1743,6 +1866,336 @@ def _derive_libubox_checked_calloc_outputs(context: CampaignContext) -> dict[str
     }
 
 
+def _derive_libubox_unchecked_calloc_output(context: CampaignContext) -> dict[str, Any]:
+    """Prove an immediate read of a calloc_a output on its failure path."""
+
+    if str(context.state.get("vulnerability_type") or "") != "uninitialized_memory_use":
+        raise RuleNotApplicable("candidate is not an uninitialized-use candidate")
+    source = _exact_source_context(context)
+    frame = _mapping(source.get("frame"))
+    lines = list(source.get("lines") or [])
+    line_number = int(frame.get("line") or 0)
+    function_name = str(frame.get("function") or "")
+    pattern = _unchecked_calloc_a_source_pattern(
+        lines,
+        function=function_name,
+        use_line=line_number,
+    )
+    exact_calls = _exact_unchecked_calloc_calls(context, source, pattern)
+    dependency = _libubox_calloc_contract(context, _mapping(source.get("mapping")))
+    if dependency.get("failure_result") != "NULL before auxiliary output assignment":
+        raise CertificateError("pinned calloc_a failure contract changed")
+
+    source_root = _contained_directory(
+        context.root,
+        Path(source["source_root"]),
+        "source checkout",
+    )
+    entry = _registered_ubus_string_entry_contract(
+        context,
+        source_root,
+        callee=function_name,
+    )
+    callback_binary = _registered_ubus_callback_binary_binding(
+        context,
+        source,
+        callback=str(entry["callback"]),
+        method=str(entry["method"]),
+    )
+    source_binding = _source_binding(
+        context,
+        source,
+        source_function=function_name,
+        source_lines=[int(pattern["allocation_line"]), line_number],
+    )
+    additional_refs = _deduplicated_source_refs(
+        context,
+        [
+            Path(str(entry["source_path"])),
+            context.root / str(_mapping(dependency["package_makefile"])["path"]),
+            context.root / str(_mapping(dependency["source_archive"])["path"]),
+        ],
+    )
+    return {
+        "rule_claim": (
+            "calloc_a can return before defining its auxiliary output, which the exact "
+            "strcpy call immediately consumes on a registered ubus request path"
+        ),
+        "operation_address": str(context.binding.get("address") or ""),
+        "source_binding": source_binding,
+        "source_excerpt": {
+            "path": source_binding["source_path"],
+            "sha256": source_binding["source_sha256"],
+            "function": function_name,
+            "allocation_line": int(pattern["allocation_line"]),
+            "allocation": str(pattern["allocation"]),
+            "use_line": line_number,
+            "use": str(pattern["statement"]),
+        },
+        "dependency_contract": dependency,
+        "additional_source_refs": additional_refs,
+        "exact_dataflow": exact_calls,
+        "entry_proof": {
+            **{key: value for key, value in entry.items() if key != "source_path"},
+            "callback_binary": callback_binary,
+            "boundary_control": (
+                "the registered ubus method parses a string from the request and passes it "
+                "as the allocation name, controlling both strlen and the later copy source"
+            ),
+        },
+        "failure_path": {
+            "allocation_result": str(pattern["primary"]),
+            "unassigned_output": str(pattern["output"]),
+            "allocator_result": "NULL",
+            "next_operation": "strcpy destination argument",
+            "feasibility": "calloc is permitted to return NULL",
+        },
+        "claims": {
+            "exact_operation": True,
+            "source_or_binary_binding": True,
+            "read_before_write": True,
+            "real_entry_reachability": True,
+            "attacker_or_boundary_control": True,
+        },
+    }
+
+
+def _unchecked_calloc_a_source_pattern(
+    lines: Sequence[str],
+    *,
+    function: str,
+    use_line: int,
+) -> dict[str, Any]:
+    """Recognize only an immediate strcpy through an unchecked calloc_a output."""
+
+    if not (0 < use_line <= len(lines)):
+        raise RuleNotApplicable("exact source use line is outside the source file")
+    statement = lines[use_line - 1].strip()
+    use = re.fullmatch(
+        r"(?:(?:[A-Za-z_]\w*(?:\s*(?:->|\.)\s*[A-Za-z_]\w*)+)\s*=\s*)?"
+        r"strcpy\s*\(\s*(?P<output>[A-Za-z_]\w*)\s*,\s*"
+        r"(?P<input>[A-Za-z_]\w*)\s*\)\s*;",
+        statement,
+    )
+    if use is None:
+        raise RuleNotApplicable("exact source statement is not a direct strcpy through a local")
+
+    prefix = _source_function_prefix(lines, function, use_line)
+    allocations = list(
+        re.finditer(
+            r"(?P<primary>[A-Za-z_]\w*)\s*=\s*calloc_a\s*"
+            r"\((?P<arguments>.*?)\)\s*;",
+            prefix,
+            re.DOTALL,
+        )
+    )
+    if not allocations:
+        raise RuleNotApplicable("source function has no preceding calloc_a assignment")
+    allocation = allocations[-1]
+    outputs = re.findall(r"&\s*([A-Za-z_]\w*)", allocation.group("arguments"))
+    output = use.group("output")
+    if output not in outputs:
+        raise RuleNotApplicable("strcpy destination is not a calloc_a auxiliary output")
+    if allocation.group("primary") == output:
+        raise RuleNotApplicable("calloc_a primary and auxiliary outputs are not distinct")
+
+    # The narrow rule intentionally admits no intervening statement.  A guard,
+    # fallback assignment, macro, or other control flow therefore remains for a
+    # different proof instead of being guessed safe or unsafe here.
+    if prefix[allocation.end() :].strip() != statement:
+        raise RuleNotApplicable("calloc_a output use is not the immediate next statement")
+    prefix_start_line = use_line - prefix.count("\n")
+    allocation_line = prefix_start_line + prefix[: allocation.start()].count("\n")
+    return {
+        "primary": allocation.group("primary"),
+        "output": output,
+        "input": use.group("input"),
+        "outputs": outputs,
+        "allocation_line": allocation_line,
+        "allocation": " ".join(allocation.group(0).split()),
+        "statement": statement,
+    }
+
+
+def _exact_unchecked_calloc_calls(
+    context: CampaignContext,
+    source: Mapping[str, Any],
+    pattern: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Bind the source failure path to the exact frozen calls and stack slot."""
+
+    if str(context.binding.get("pcode") or "") != "CALLIND":
+        raise RuleNotApplicable("exact candidate operation is not CALLIND")
+    candidate_range = _candidate_stack_range(context)
+    stack_offset = int(candidate_range["stack_offset"])
+    prepared_args = _mapping_rows(_mapping(context.binding.get("pcode_record")).get("args"))
+    if (
+        not prepared_args
+        or str(prepared_args[0].get("address_space") or "") != "stack"
+        or int(prepared_args[0].get("stack_offset") or 0) != stack_offset
+    ):
+        raise RuleNotApplicable("exact prepared call does not consume the candidate stack local")
+
+    function = _bound_export_function(context)
+    operations = _mapping_rows(function.get("pcode_operations"))
+    use_address = _hex_int(context.binding.get("address"), "unchecked output use address")
+    use_matches = [
+        (index, operation)
+        for index, operation in enumerate(operations)
+        if _operation_address_or_none(operation) == use_address
+        and str(operation.get("pcode") or "") == "CALLIND"
+    ]
+    if len(use_matches) != 1:
+        raise RuleNotApplicable("exact use address does not contain one CALLIND")
+    use_index, use_call = use_matches[0]
+    use_inputs = _mapping_rows(use_call.get("inputs"))
+    if (
+        len(use_inputs) < 3
+        or str(use_inputs[1].get("address_space") or "") != "stack"
+        or int(use_inputs[1].get("stack_offset") or 0) != stack_offset
+    ):
+        raise RuleNotApplicable("exact strcpy destination is not the candidate stack local")
+    use_import = _exact_import_call(context, operations, use_call, expected="strcpy")
+
+    allocations: list[dict[str, Any]] = []
+    seen_addresses: set[int] = set()
+    for index, operation in enumerate(operations[:use_index]):
+        if str(operation.get("pcode") or "") != "CALLIND":
+            continue
+        address = _operation_address_or_none(operation)
+        if address is None or address in seen_addresses:
+            continue
+        seen_addresses.add(address)
+        try:
+            contexts = _source_contexts_for_operation(context, _hex(address))
+        except RuleNotApplicable:
+            continue
+        if not any(
+            Path(item["source_path"]).resolve() == Path(source["source_path"]).resolve()
+            and int(_mapping(item.get("frame")).get("line") or 0)
+            == int(pattern["allocation_line"])
+            for item in contexts
+        ):
+            continue
+        try:
+            imported = _exact_import_call(context, operations, operation, expected="__calloc_a")
+            pointer_argument = _stack_pointer_call_argument(
+                operations,
+                call_index=index,
+                call=operation,
+                stack_offset=stack_offset,
+            )
+        except RuleNotApplicable:
+            continue
+        allocations.append(
+            {
+                "call_address": _hex(address),
+                "import": imported,
+                "auxiliary_output_argument": pointer_argument,
+            }
+        )
+    if len(allocations) != 1:
+        raise RuleNotApplicable("source allocation does not bind to one exact __calloc_a call")
+    return {
+        "candidate_stack_range": candidate_range,
+        "allocator_call": allocations[0],
+        "use_call": {
+            "call_address": _hex(use_address),
+            "import": use_import,
+            "destination_argument": use_inputs[1],
+            "source_argument": use_inputs[2],
+        },
+        "operation_order": "__calloc_a CALL precedes the exact strcpy CALLIND",
+    }
+
+
+def _exact_import_call(
+    context: CampaignContext,
+    operations: Sequence[Mapping[str, Any]],
+    call: Mapping[str, Any],
+    *,
+    expected: str,
+) -> dict[str, Any]:
+    inputs = _mapping_rows(call.get("inputs"))
+    if str(call.get("pcode") or "") != "CALLIND" or not inputs:
+        raise RuleNotApplicable("operation is not an indirect call with a target")
+    address = _hex_int(call.get("operation_address"), "import call address")
+    target = inputs[0]
+    casts = [
+        operation
+        for operation in operations
+        if _operation_address_or_none(operation) == address
+        and str(operation.get("pcode") or "") == "CAST"
+        and _mapping(operation.get("output")) == target
+    ]
+    if len(casts) != 1:
+        raise RuleNotApplicable("indirect call target has no unique import CAST")
+    cast_inputs = _mapping_rows(casts[0].get("inputs"))
+    if len(cast_inputs) != 1 or str(cast_inputs[0].get("address_space") or "") != "ram":
+        raise RuleNotApplicable("indirect call CAST is not loaded from a static pointer slot")
+    relocation = _dynamic_function_relocation(
+        context,
+        _hex_int(cast_inputs[0].get("address"), "import pointer address"),
+    )
+    if str(relocation.get("symbol") or "") != expected:
+        raise RuleNotApplicable(f"indirect call resolves to {relocation.get('symbol')}, not {expected}")
+    return {
+        "symbol": expected,
+        "relocation": relocation,
+        "target": target,
+        "cast_input": cast_inputs[0],
+    }
+
+
+def _stack_pointer_call_argument(
+    operations: Sequence[Mapping[str, Any]],
+    *,
+    call_index: int,
+    call: Mapping[str, Any],
+    stack_offset: int,
+) -> dict[str, Any]:
+    matches: list[dict[str, Any]] = []
+    for argument_index, argument in enumerate(_mapping_rows(call.get("inputs"))[1:]):
+        identity = _varnode_identity(argument)
+        if identity is None:
+            continue
+        definitions = [
+            operation
+            for operation in operations[:call_index]
+            if _varnode_identity(_mapping(operation.get("output"))) == identity
+        ]
+        if not definitions or str(definitions[-1].get("pcode") or "") != "PTRSUB":
+            continue
+        constants = [
+            int(item["constant"])
+            for item in _mapping_rows(definitions[-1].get("inputs"))
+            if str(item.get("address_space") or "") == "const"
+            and isinstance(item.get("constant"), int)
+        ]
+        if constants != [stack_offset]:
+            continue
+        matches.append(
+            {
+                "argument_index": argument_index,
+                "argument": argument,
+                "pointer_definition_address": str(
+                    definitions[-1].get("operation_address") or ""
+                ),
+                "stack_offset": stack_offset,
+            }
+        )
+    if len(matches) != 1 or int(matches[0]["argument_index"]) == 0:
+        raise RuleNotApplicable("calloc call has no unique auxiliary stack-output pointer")
+    return matches[0]
+
+
+def _operation_address_or_none(operation: Mapping[str, Any]) -> int | None:
+    try:
+        return int(str(operation.get("operation_address") or ""), 0)
+    except (TypeError, ValueError):
+        return None
+
+
 def _derive_libubox_foreach_initialization(context: CampaignContext) -> dict[str, Any]:
     if str(context.state.get("vulnerability_type") or "") != "uninitialized_memory_use":
         raise RuleNotApplicable("candidate is not an uninitialized-use candidate")
@@ -1805,6 +2258,10 @@ def _derive_c_checked_api_output(context: CampaignContext) -> dict[str, Any]:
     if str(context.state.get("vulnerability_type") or "") != "uninitialized_memory_use":
         raise RuleNotApplicable("candidate is not an uninitialized-use candidate")
     source = _exact_source_context(context)
+    try:
+        return _derive_c_stat_family_output_use(context, source)
+    except RuleNotApplicable:
+        pass
     frame = source["frame"]
     lines = source["lines"]
     line_number = int(frame["line"])
@@ -1894,6 +2351,424 @@ def _derive_c_checked_api_output(context: CampaignContext) -> dict[str, Any]:
             "source_or_binary_binding": True,
             "all_path_initialization": True,
         },
+    }
+
+
+def _derive_c_api_output_address(context: CampaignContext) -> dict[str, Any]:
+    """Refute a value-read claim when an API receives only a local's address."""
+
+    if str(context.state.get("vulnerability_type") or "") != "uninitialized_memory_use":
+        raise RuleNotApplicable("candidate is not an uninitialized-use candidate")
+    if str(context.binding.get("pcode") or "") not in {"CALL", "CALLIND"}:
+        raise RuleNotApplicable("exact operation is not an API call")
+    source = _exact_source_context(context)
+    frame = source["frame"]
+    lines = source["lines"]
+    line_number = int(frame["line"])
+    statement = _c_statement_from_line(lines, line_number)
+    match = re.search(
+        r"\b(?P<api>stat|lstat)\s*\([^;]*?&\s*(?P<output>[A-Za-z_]\w*)\b[^;]*\)",
+        statement,
+        re.DOTALL,
+    )
+    if match is None:
+        raise RuleNotApplicable("exact source call has no supported write-only output argument")
+    declaration = re.search(
+        rf"\bstruct\s+stat\s+{re.escape(match.group('output'))}\s*;",
+        _source_function_prefix(lines, str(frame["function"]), line_number),
+    )
+    if declaration is None:
+        raise RuleNotApplicable("stat-family output is not a declared local struct stat")
+    candidate_range = _candidate_stack_range(context)
+    compiled_object = _compiled_stat_output_object(
+        context,
+        source,
+        output=match.group("output"),
+        source_line=line_number,
+    )
+    if not _range_contains(compiled_object, candidate_range):
+        raise RuleNotApplicable("candidate local is outside the exact stat-family output object")
+    dependency = _sdk_api_contract(
+        context,
+        _mapping(source.get("mapping")),
+        api=match.group("api"),
+    )
+    source_binding = _source_binding(
+        context,
+        source,
+        source_function=str(frame["function"]),
+        source_lines=[line_number],
+    )
+    return {
+        "rule_claim": "the exact call passes the local object's address as a write-only API output",
+        "operation_address": str(context.binding.get("address") or ""),
+        "source_binding": source_binding,
+        "source_excerpt": {
+            "path": source_binding["source_path"],
+            "sha256": source_binding["source_sha256"],
+            "function": str(frame["function"]),
+            "line": line_number,
+            "statement": " ".join(statement.split()),
+        },
+        "dependency_contract": dependency,
+        "additional_source_refs": [
+            dependency["sdk_archive"],
+            dependency["api_header"],
+        ],
+        "output_argument": {
+            "api": match.group("api"),
+            "object": match.group("output"),
+            "expression": f"&{match.group('output')}",
+            "runtime_value_read": False,
+            "success_effect": "initializes the caller-provided struct stat",
+            "compiled_object": compiled_object,
+            "candidate_range": candidate_range,
+        },
+        "claims": {
+            "exact_operation": True,
+            "source_or_binary_binding": True,
+            "semantics_absent": True,
+        },
+    }
+
+
+def _derive_c_stat_family_output_use(
+    context: CampaignContext, source: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Prove a struct stat field use is restricted to successful API paths."""
+
+    frame = source["frame"]
+    lines = source["lines"]
+    line_number = int(frame["line"])
+    statement = _c_statement_from_line(lines, line_number)
+    function_name = str(frame["function"])
+    function_prefix = _source_function_prefix(lines, function_name, line_number)
+    declarations = re.findall(
+        r"\bstruct\s+stat\s+([A-Za-z_]\w*)\s*;",
+        function_prefix,
+    )
+    outputs = [name for name in declarations if re.search(rf"\b{re.escape(name)}\b", statement)]
+    if not outputs:
+        raise RuleNotApplicable("exact source use does not identify a local struct stat output")
+    candidate_range = _candidate_stack_range(context)
+    matched_outputs: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+    for output_name in outputs:
+        call_blocks = _stat_family_failure_blocks(lines, output_name, line_number)
+        if not call_blocks:
+            continue
+        compiled = _compiled_stat_output_object(
+            context,
+            source,
+            output=output_name,
+            source_line=int(call_blocks[0]["header_line"]),
+        )
+        if _range_contains(compiled, candidate_range):
+            matched_outputs.append((output_name, call_blocks[0], compiled))
+    if len(matched_outputs) != 1:
+        raise RuleNotApplicable("candidate stack range does not select one checked struct stat output")
+    output, initialization, compiled_object = matched_outputs[0]
+    path_proof = _stat_output_path_proof(
+        lines,
+        output=output,
+        use_line=line_number,
+        initialization=initialization,
+    )
+    if path_proof is None:
+        raise RuleNotApplicable("stat-family failure path can reach the exact source use")
+    apis = list(initialization["apis"])
+    dependencies = [
+        _sdk_api_contract(context, _mapping(source.get("mapping")), api=api)
+        for api in apis
+    ]
+    source_lines = sorted(
+        {
+            line_number,
+            int(initialization["header_line"]),
+            *[int(item) for item in path_proof["evidence_lines"]],
+        }
+    )
+    source_binding = _source_binding(
+        context,
+        source,
+        source_function=function_name,
+        source_lines=source_lines,
+    )
+    additional_refs: dict[tuple[str, str], dict[str, Any]] = {}
+    for dependency in dependencies:
+        for key in ("sdk_archive", "api_header"):
+            reference = dict(_mapping(dependency.get(key)))
+            additional_refs[(str(reference.get("path") or ""), key)] = reference
+    return {
+        "rule_claim": "every path to the exact struct stat field use follows a successful stat-family call",
+        "operation_address": str(context.binding.get("address") or ""),
+        "source_binding": source_binding,
+        "source_excerpt": {
+            "path": source_binding["source_path"],
+            "sha256": source_binding["source_sha256"],
+            "function": function_name,
+            "line": line_number,
+            "statement": " ".join(statement.split()),
+            "initialization_call": initialization["header"],
+        },
+        "dependency_contracts": dependencies,
+        "additional_source_refs": [additional_refs[key] for key in sorted(additional_refs)],
+        "initialization": {
+            "output": output,
+            "apis": apis,
+            "success_return": 0,
+            "path_proof": path_proof,
+            "compiled_object": compiled_object,
+            "candidate_range": candidate_range,
+        },
+        "claims": {
+            "exact_operation": True,
+            "source_or_binary_binding": True,
+            "all_path_initialization": True,
+        },
+    }
+
+
+def _candidate_stack_range(context: CampaignContext) -> dict[str, Any]:
+    affected = _mapping(context.state.get("affected_object"))
+    label = str(affected.get("label") or affected.get("identity") or "").rsplit(":", 1)[-1]
+    match = re.fullmatch(r"local_([0-9a-fA-F]+)", label)
+    if match is None:
+        raise RuleNotApplicable("candidate affected object is not an exact decompiler stack local")
+    offset = -int(match.group(1), 16)
+    width = int(_mapping(context.state.get("type_facts")).get("read_width_bytes") or 0)
+    if width <= 0:
+        width = int(context.binding.get("width_bytes") or 0)
+    if width <= 0:
+        raise RuleNotApplicable("candidate stack local has no positive access width")
+    return {
+        "label": label,
+        "stack_offset": offset,
+        "size_bytes": width,
+        "end_stack_offset": offset + width,
+    }
+
+
+def _compiled_stat_output_object(
+    context: CampaignContext,
+    source: Mapping[str, Any],
+    *,
+    output: str,
+    source_line: int,
+) -> dict[str, Any]:
+    function = _bound_export_function(context)
+    operations = _mapping_rows(function.get("pcode_operations"))
+    call_matches: list[tuple[int, Mapping[str, Any]]] = []
+    seen_addresses: set[int] = set()
+    for index, operation in enumerate(operations):
+        if str(operation.get("pcode") or "") not in {"CALL", "CALLIND"}:
+            continue
+        address = _hex_int(operation.get("operation_address"), "stat-family call address")
+        if address in seen_addresses:
+            continue
+        seen_addresses.add(address)
+        try:
+            contexts = _source_contexts_for_operation(context, _hex(address))
+        except RuleNotApplicable:
+            continue
+        if any(
+            Path(item["source_path"]).resolve() == Path(source["source_path"]).resolve()
+            and int(_mapping(item.get("frame")).get("line") or 0) == source_line
+            for item in contexts
+        ):
+            call_matches.append((index, operation))
+    if len(call_matches) != 1:
+        raise RuleNotApplicable("source stat-family initializer does not map to one exact CALL")
+    call_index, call = call_matches[0]
+    inputs = _mapping_rows(call.get("inputs"))
+    if len(inputs) < 2:
+        raise RuleNotApplicable("exact stat-family CALL has no output-pointer argument")
+    pointer = inputs[-1]
+    pointer_space = str(pointer.get("address_space") or "")
+    pointer_address = str(pointer.get("address") or "").lower()
+    definitions = [
+        operation
+        for operation in operations[:call_index]
+        if str(_mapping(operation.get("output")).get("address_space") or "") == pointer_space
+        and str(_mapping(operation.get("output")).get("address") or "").lower() == pointer_address
+    ]
+    if not definitions or str(definitions[-1].get("pcode") or "") != "PTRSUB":
+        raise RuleNotApplicable("stat-family output pointer lacks an exact stack PTRSUB")
+    definition_inputs = _mapping_rows(definitions[-1].get("inputs"))
+    constants = [
+        int(item["constant"])
+        for item in definition_inputs
+        if str(item.get("address_space") or "") == "const"
+        and isinstance(item.get("constant"), int)
+    ]
+    if len(constants) != 1 or constants[0] >= 0:
+        raise RuleNotApplicable("stat-family output PTRSUB has no unique negative stack base")
+    mapping = _reference_mapping(context)
+    layout = _reference_struct_layout(context, mapping, "stat")
+    base = constants[0]
+    size = int(layout["size_bytes"])
+    return {
+        "source_object": output,
+        "call_address": str(call.get("operation_address") or ""),
+        "pointer_definition_address": str(definitions[-1].get("operation_address") or ""),
+        "stack_offset": base,
+        "size_bytes": size,
+        "end_stack_offset": base + size,
+        "layout": layout,
+    }
+
+
+def _range_contains(container: Mapping[str, Any], candidate: Mapping[str, Any]) -> bool:
+    return (
+        int(container.get("stack_offset") or 0)
+        <= int(candidate.get("stack_offset") or 0)
+        and int(candidate.get("end_stack_offset") or 0)
+        <= int(container.get("end_stack_offset") or 0)
+    )
+
+
+def _c_statement_from_line(lines: Sequence[str], line_number: int) -> str:
+    statement_lines = [lines[line_number - 1].strip()]
+    cursor = line_number
+    while ";" not in " ".join(statement_lines) and cursor < min(len(lines), line_number + 12):
+        statement_lines.append(lines[cursor].strip())
+        cursor += 1
+    return " ".join(item for item in statement_lines if item)
+
+
+def _stat_family_failure_blocks(
+    lines: Sequence[str], output: str, use_line: int
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    output_pattern = re.compile(rf"&\s*{re.escape(output)}\b")
+    api_pattern = re.compile(r"\b(?:stat|lstat)\b")
+    for open_line, close_line in _c_brace_pairs(lines):
+        if open_line >= use_line:
+            continue
+        header_line, header = _c_block_header(lines, open_line)
+        if (
+            not re.search(r"\bif\s*\(", header)
+            or output_pattern.search(header) is None
+            or api_pattern.search(header) is None
+            or re.search(r"(?:<\s*0|!=\s*0)", header) is None
+        ):
+            continue
+        apis = sorted(set(api_pattern.findall(header)))
+        results.append(
+            {
+                "header_line": header_line,
+                "header": " ".join(header.split()),
+                "failure_open_line": open_line,
+                "failure_close_line": close_line,
+                "apis": apis,
+            }
+        )
+    return sorted(results, key=lambda item: int(item["header_line"]))
+
+
+def _stat_output_path_proof(
+    lines: Sequence[str],
+    *,
+    output: str,
+    use_line: int,
+    initialization: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    failure_open = int(initialization["failure_open_line"])
+    failure_close = int(initialization["failure_close_line"])
+
+    # A use inside the `else` paired with the failing call is necessarily on
+    # the successful return path.
+    pairs = _c_brace_pairs(lines)
+    success_blocks: list[tuple[int, int, int]] = []
+    for open_line, close_line in pairs:
+        header_line, header = _c_block_header(lines, open_line)
+        if "else" in header and failure_close in {header_line, open_line}:
+            success_blocks.append((open_line, close_line, header_line))
+        if (
+            open_line < use_line <= close_line
+            and "else" in header
+            and failure_close in {header_line, open_line}
+        ):
+            return {
+                "kind": "successful_else_branch",
+                "evidence_lines": [failure_open, failure_close, header_line],
+            }
+
+    # A success flag initialized false and assigned true only in the success
+    # branch can guard later reads of the output object.
+    function_prefix = "\n".join(lines[:use_line])
+    for open_line, close_line in pairs:
+        if not (open_line < use_line <= close_line):
+            continue
+        header_line, header = _c_block_header(lines, open_line)
+        flag_match = re.search(r"\bif\s*\(\s*(?P<flag>[A-Za-z_]\w*)\s*\)", header)
+        if flag_match is None:
+            continue
+        flag = flag_match.group("flag")
+        if re.search(rf"\b{re.escape(flag)}\s*=\s*0\s*;", function_prefix) is None:
+            continue
+        true_assignments = [
+            number
+            for number in range(1, use_line + 1)
+            if re.search(rf"\b{re.escape(flag)}\s*=\s*1\s*;", lines[number - 1])
+        ]
+        success_assignments = [
+            number
+            for number in true_assignments
+            if any(open_line < number < close_line for open_line, close_line, _ in success_blocks)
+        ]
+        if len(true_assignments) == 1 and len(success_assignments) == 1:
+            return {
+                "kind": "success_flag_guard",
+                "flag": flag,
+                "evidence_lines": [
+                    failure_open,
+                    failure_close,
+                    success_assignments[0],
+                    header_line,
+                ],
+            }
+
+    # Otherwise the failure block itself must end in return, and every goto
+    # must jump past this use or reach an unconditional return before it.
+    body_lines = [
+        (number, lines[number - 1].strip())
+        for number in range(failure_open + 1, failure_close)
+        if lines[number - 1].strip() and not lines[number - 1].lstrip().startswith(("/*", "*", "//"))
+    ]
+    if not body_lines or re.fullmatch(r"return\b[^;]*;", body_lines[-1][1]) is None:
+        return None
+    evidence_lines = [failure_open, body_lines[-1][0], failure_close]
+    function_end = next(
+        (
+            close_line
+            for open_line, close_line in pairs
+            if open_line <= failure_open < use_line <= close_line
+            and re.search(r"\b[A-Za-z_]\w*\s*\(", _c_block_header(lines, open_line)[1])
+        ),
+        len(lines),
+    )
+    for goto_line in range(failure_open + 1, failure_close):
+        goto_match = re.search(r"\bgoto\s+([A-Za-z_]\w*)\s*;", lines[goto_line - 1])
+        if goto_match is None:
+            continue
+        label_line = _first_matching_line(
+            lines,
+            failure_close + 1,
+            function_end,
+            rf"^\s*{re.escape(goto_match.group(1))}\s*:",
+        )
+        if label_line is None:
+            return None
+        evidence_lines.extend([goto_line, label_line])
+        if label_line < use_line:
+            return_line = _first_matching_line(lines, label_line + 1, use_line - 1, r"^\s*return\b")
+            if return_line is None:
+                return None
+            evidence_lines.append(return_line)
+    return {
+        "kind": "failure_routes_terminate_or_skip_use",
+        "output": output,
+        "evidence_lines": sorted(set(evidence_lines)),
     }
 
 
@@ -5726,6 +6601,271 @@ def _source_function_index(
     return index
 
 
+def _registered_ubus_string_entry_contract(
+    context: CampaignContext,
+    source_root: Path,
+    *,
+    callee: str,
+) -> dict[str, Any]:
+    """Find a registered ubus callback that passes a parsed string to callee."""
+
+    index = _source_function_index(context, source_root)
+    matches: list[dict[str, Any]] = []
+    call_pattern = re.compile(
+        rf"\b{re.escape(callee)}\s*\(\s*(?P<argument>[A-Za-z_]\w*)\s*,",
+        re.DOTALL,
+    )
+    for callback, definitions in sorted(index.items()):
+        for definition in definitions:
+            body = str(definition.get("text") or "")
+            call = call_pattern.search(body)
+            if call is None:
+                continue
+            argument = call.group("argument")
+            getter = re.search(
+                rf"\b{re.escape(argument)}\s*=\s*blobmsg_get_string\s*\(\s*"
+                rf"(?P<table>[A-Za-z_]\w*)\s*\[\s*(?P<index>[^\]]+)\s*\]\s*\)\s*;",
+                body,
+            )
+            if getter is None or getter.start() >= call.start():
+                continue
+            table = getter.group("table")
+            table_index = " ".join(getter.group("index").split())
+            before_getter = body[: getter.start()]
+            parse = re.search(
+                rf"\bblobmsg_parse\s*\([^;]*\b{re.escape(table)}\b[^;]*\)\s*;",
+                before_getter,
+                re.DOTALL,
+            )
+            if parse is None:
+                continue
+            guard = re.search(
+                rf"if\s*\(\s*!\s*{re.escape(table)}\s*\[\s*"
+                rf"{re.escape(table_index)}\s*\]\s*\)\s*"
+                rf"(?:return\b[^;]*;|\{{[^}}]*\breturn\b[^;]*;[^}}]*\}})",
+                before_getter,
+                re.DOTALL,
+            )
+            if guard is None:
+                continue
+
+            path = Path(str(definition["path"]))
+            file_text = _read_source_text(path)
+            registration = re.search(
+                rf"UBUS_METHOD\s*\(\s*\"(?P<method>[^\"]+)\"\s*,\s*"
+                rf"{re.escape(callback)}\s*,",
+                file_text,
+            )
+            if registration is None:
+                continue
+            before_registration = file_text[: registration.start()]
+            arrays = list(
+                re.finditer(
+                    r"(?:static\s+)?(?:const\s+)?struct\s+ubus_method\s+"
+                    r"(?P<name>[A-Za-z_]\w*)\s*\[\s*\]\s*=\s*\{",
+                    before_registration,
+                )
+            )
+            if not arrays:
+                continue
+            methods_array = arrays[-1].group("name")
+            objects = []
+            for object_match in re.finditer(
+                r"(?:static\s+)?struct\s+ubus_object\s+(?P<name>[A-Za-z_]\w*)\s*="
+                r"\s*\{(?P<body>.*?)\n\s*\};",
+                file_text,
+                re.DOTALL,
+            ):
+                if re.search(
+                    rf"\.methods\s*=\s*&?\s*{re.escape(methods_array)}\b",
+                    object_match.group("body"),
+                ):
+                    objects.append(object_match.group("name"))
+            registered_objects = [
+                object_name
+                for object_name in objects
+                if re.search(
+                    rf"\b[A-Za-z_]\w*add_object\s*\(\s*&\s*"
+                    rf"{re.escape(object_name)}\s*\)",
+                    file_text,
+                )
+            ]
+            if len(registered_objects) != 1:
+                continue
+
+            start_line = int(definition["start_line"])
+            line_for = lambda position: start_line + body[:position].count("\n")
+            matches.append(
+                {
+                    "callback": callback,
+                    "method": registration.group("method"),
+                    "methods_array": methods_array,
+                    "ubus_object": registered_objects[0],
+                    "source_path": path,
+                    "source_sha256": _sha256_file(path),
+                    "parse_line": line_for(parse.start()),
+                    "guard_line": line_for(guard.start()),
+                    "getter_line": line_for(getter.start()),
+                    "call_line": line_for(call.start()),
+                    "request_table": table,
+                    "request_index": table_index,
+                    "request_string": argument,
+                    "registration_line": file_text[: registration.start()].count("\n") + 1,
+                    "object_registration": (
+                        f"{registered_objects[0]} uses {methods_array} and is passed to an "
+                        "add_object registration function"
+                    ),
+                }
+            )
+    if len(matches) != 1:
+        raise RuleNotApplicable(
+            "callee has no unique registered ubus callback with parsed-string control"
+        )
+    return matches[0]
+
+
+def _registered_ubus_callback_binary_binding(
+    context: CampaignContext,
+    source: Mapping[str, Any],
+    *,
+    callback: str,
+    method: str,
+) -> dict[str, Any]:
+    """Recover a stripped ubus handler from its frozen method-table record."""
+
+    mapping = _mapping(source.get("mapping"))
+    reference_path = _contained_file(
+        context.root,
+        str(_mapping(mapping.get("reference_binary")).get("path") or ""),
+        "reference binary",
+    )
+    reference_functions = [
+        (size, item)
+        for size, rows in _reference_function_index(context, reference_path).items()
+        for item in rows
+        if callback
+        in {
+            _normalized_c_function_name(str(name))
+            for name in _string_rows(item.get("names"))
+        }
+    ]
+    unique_reference = {
+        (int(item["address"]), size): (size, item)
+        for size, item in reference_functions
+    }
+    if len(unique_reference) != 1:
+        raise RuleNotApplicable("callback has no unique reference text symbol")
+    reference_size, reference_function = next(iter(unique_reference.values()))
+    reference_address = int(reference_function["address"])
+
+    layout = _reference_struct_layout(context, mapping, "ubus_method")
+    members = {str(item["name"]): item for item in _mapping_rows(layout.get("members"))}
+    if (
+        int(layout.get("size_bytes") or 0) <= 0
+        or int(_mapping(members.get("name")).get("offset_bytes", -1)) != 0
+        or int(_mapping(members.get("handler")).get("offset_bytes", -1)) != 8
+        or int(_mapping(members.get("name")).get("size_bytes") or 0) != 8
+        or int(_mapping(members.get("handler")).get("size_bytes") or 0) != 8
+    ):
+        raise RuleNotApplicable("reference ubus_method pointer layout changed")
+
+    frozen_data, elf_type, segments = _elf_layout(context.binary_path)
+    if elf_type != 2 or frozen_data[4:6] != b"\x02\x01":
+        raise RuleNotApplicable("ubus table recovery requires little-endian ELF64 ET_EXEC")
+    method_vmas = _elf_cstring_vmas(frozen_data, segments, method)
+    if not method_vmas:
+        raise RuleNotApplicable("frozen binary does not contain the ubus method name")
+    record_size = int(layout["size_bytes"])
+    candidates: list[dict[str, Any]] = []
+    fingerprint_keys = (
+        "normalized_function_sha256",
+        "constant_signature_sha256",
+        "call_topology_sha256",
+        "control_flow_sha256",
+        "relocation_shape_sha256",
+    )
+    for segment in segments:
+        if not int(segment["flags"]) & 2:
+            continue
+        segment_start = int(segment["file_offset"])
+        segment_end = segment_start + int(segment["file_size"])
+        for record_offset in range(segment_start, segment_end - record_size + 1, 8):
+            name_pointer = struct.unpack_from("<Q", frozen_data, record_offset)[0]
+            if name_pointer not in method_vmas:
+                continue
+            handler = struct.unpack_from("<Q", frozen_data, record_offset + 8)[0]
+            try:
+                frozen_fingerprint = _normalized_function_fingerprint(
+                    context.binary_path,
+                    handler,
+                    reference_size,
+                )
+            except RuleNotApplicable:
+                continue
+            if not all(
+                frozen_fingerprint[key] == reference_function[key]
+                for key in fingerprint_keys
+            ):
+                continue
+            record_vma = (
+                int(segment["virtual_address"])
+                + record_offset
+                - int(segment["file_offset"])
+            )
+            candidates.append(
+                {
+                    "method_record_address": _hex(record_vma),
+                    "method_name_address": _hex(name_pointer),
+                    "handler_address": _hex(handler),
+                    "handler_size_bytes": reference_size,
+                    "record_size_bytes": record_size,
+                    "frozen_function_fingerprint": {
+                        key: frozen_fingerprint[key] for key in fingerprint_keys
+                    },
+                }
+            )
+    if len(candidates) != 1:
+        raise RuleNotApplicable("frozen method table has no unique fingerprint-matched handler")
+    return {
+        "surface_kind": "registered_ubus_callback",
+        "method": method,
+        "callback": callback,
+        **candidates[0],
+        "reference_handler_address": _hex(reference_address),
+        "reference_handler_names": _string_rows(reference_function.get("names")),
+        "reference_binary_path": _relative_if_contained(context.root, reference_path),
+        "reference_binary_sha256": _sha256_file(reference_path),
+        "mapping_basis": "ubus_method_record_plus_function_fingerprint",
+        "constants_match": True,
+        "call_topology_match": True,
+        "compiled_layout": layout,
+    }
+
+
+def _elf_cstring_vmas(
+    data: bytes,
+    segments: Sequence[Mapping[str, int]],
+    value: str,
+) -> set[int]:
+    needle = value.encode("utf-8") + b"\0"
+    results: set[int] = set()
+    for segment in segments:
+        start = int(segment["file_offset"])
+        end = start + int(segment["file_size"])
+        cursor = start
+        while True:
+            position = data.find(needle, cursor, end)
+            if position < 0:
+                break
+            results.add(
+                int(segment["virtual_address"])
+                + position
+                - int(segment["file_offset"])
+            )
+            cursor = position + 1
+    return results
+
+
 def _whole_struct_memset_contract(source: Mapping[str, Any]) -> list[dict[str, Any]]:
     function = str(source.get("function") or "")
     text = str(source.get("text") or "")
@@ -6090,16 +7230,19 @@ def _deduplicated_source_refs(
 
 
 def _source_function_prefix(lines: Sequence[str], function: str, line_number: int) -> str:
-    target_index = line_number - 1
-    start = -1
     function_pattern = re.compile(rf"\b{re.escape(function)}\s*\(")
-    for index in range(target_index, -1, -1):
-        if function_pattern.search(lines[index]):
-            start = index
-            break
-    if start < 0:
+    matches: list[int] = []
+    for open_line, close_line in _c_brace_pairs(lines):
+        if not (open_line <= line_number <= close_line):
+            continue
+        header_start, header = _c_block_header(lines, open_line)
+        if function_pattern.search(header) and not re.search(
+            r"\b(?:if|for|while|switch)\s*\(", header
+        ):
+            matches.append(header_start)
+    if len(matches) != 1:
         raise RuleNotApplicable("cannot locate the exact source function definition")
-    return "\n".join(lines[start : target_index + 1])
+    return "\n".join(lines[matches[0] - 1 : line_number])
 
 
 def _source_function_text(lines: Sequence[str], function: str, line_number: int) -> str:
@@ -6364,7 +7507,7 @@ def _sdk_api_contract(
     *,
     api: str,
 ) -> dict[str, Any]:
-    if api not in {"stat", "glob", "read"}:
+    if api not in {"stat", "lstat", "glob", "read"}:
         raise CertificateError(f"unsupported checked API contract: {api}")
     sdk_ref = _mapping(mapping.get("sdk"))
     sdk_archive = _contained_file(
@@ -6382,6 +7525,7 @@ def _sdk_api_contract(
         raise CertificateError("extracted pinned SDK is missing")
     relative_header = {
         "stat": Path("sys/stat.h"),
+        "lstat": Path("sys/stat.h"),
         "glob": Path("glob.h"),
         "read": Path("unistd.h"),
     }[api]
@@ -6395,6 +7539,7 @@ def _sdk_api_contract(
     header_text = _read_source_text(header)
     declaration = {
         "stat": r"int\s+stat\s*\([^;]*struct\s+stat\s*\*[^;]*\)\s*;",
+        "lstat": r"int\s+lstat\s*\([^;]*struct\s+stat\s*\*[^;]*\)\s*;",
         "glob": r"int\s+glob\s*\([^;]*glob_t\s*\*[^;]*\)\s*;",
         "read": r"ssize_t\s+read\s*\([^;]*void\s*\*[^;]*size_t[^;]*\)\s*;",
     }[api]

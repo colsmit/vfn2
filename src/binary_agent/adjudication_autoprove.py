@@ -23,6 +23,7 @@ from binary_agent.adjudication_investigation import (
 from binary_agent.adjudication_certificates import (
     C_DECLARATION_INIT_RULE,
     C_CHECKED_API_OUTPUT_RULE,
+    C_API_OUTPUT_ADDRESS_RULE,
     C_ARRAY_OBJECT_RULE,
     C_GUARDED_FIXED_ARRAY_RULE,
     C_HTML_ESCAPE_RULE,
@@ -71,6 +72,7 @@ from binary_agent.adjudication_certificates import (
     LIBUBOX_LIST_RULE,
     LIBUBOX_BLOBMSG_INIT_RULE,
     LIBUBOX_CALLOC_INIT_RULE,
+    LIBUBOX_UNCHECKED_CALLOC_BUG_RULE,
     LIBUBOX_FOREACH_INIT_RULE,
     REGISTERED_RULES,
     RULE_BASES,
@@ -349,14 +351,15 @@ def run_autoprove(
         }
         if admit:
             admitted_path = root / "reviews" / f"{unit_id}.json"
-            if admitted_path.exists():
-                proposal_ref["admission_status"] = "preserved_existing_review"
-            else:
-                admit_review(root, proposal_path)
-                admitted_units += 1
-                proposal_ref["admitted"] = True
-                proposal_ref["admission_status"] = "admitted"
-                proposal_ref["admitted_sha256"] = _sha256_file(admitted_path)
+            # Admission is a resulting state, not a count of writes performed by
+            # this invocation.  Revalidate and normalize an existing review in
+            # place so identical reruns are stable without replacing a separately
+            # authored, valid review for the same unit.
+            admit_review(root, admitted_path if admitted_path.exists() else proposal_path)
+            admitted_units += 1
+            proposal_ref["admitted"] = True
+            proposal_ref["admission_status"] = "admitted"
+            proposal_ref["admitted_sha256"] = _sha256_file(admitted_path)
         proposal_refs.append(proposal_ref)
 
     summary = {
@@ -664,6 +667,11 @@ def _decision_for_certificate(
             "Exact caller source passes the complete local table to pinned libubox "
             "blobmsg_parse, whose first statement zero-initializes every slot before any return."
         )
+    elif rule_id == C_API_OUTPUT_ADDRESS_RULE:
+        rationale = (
+            "Exact source and the pinned SDK signature show the call passes only the local "
+            "object's address as a write-only stat-family output; the alleged value read is absent."
+        )
     elif rule_id == C_ASSIGNMENT_RULE:
         rationale = (
             "Exact byte-matched source unconditionally assigns the local before a terminating "
@@ -683,6 +691,13 @@ def _decision_for_certificate(
         rationale = (
             "Exact caller source returns on calloc_a failure, while the pinned libubox success "
             "path assigns every auxiliary output pointer before the selected use."
+        )
+    elif rule_id == LIBUBOX_UNCHECKED_CALLOC_BUG_RULE:
+        rationale = (
+            "The exact frozen strcpy consumes a calloc_a auxiliary output immediately without "
+            "checking the primary result. Pinned libubox returns before assigning that output "
+            "on allocation failure, and a fingerprint-matched registered ubus callback reaches "
+            "the function with a request-controlled string."
         )
     elif rule_id == LIBUBOX_FOREACH_INIT_RULE:
         rationale = (

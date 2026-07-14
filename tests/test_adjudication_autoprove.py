@@ -422,11 +422,17 @@ def test_autoprove_checks_admits_and_finalizes_x86_certificate(tmp_path: Path) -
     root = _prepare(tmp_path, [_state("candidate-1")], _elf_with_calls(0x100))
 
     result = run_autoprove(root, admit=True)
+    first_summary = result.summary_path.read_bytes()
+    first_review = next((root / "reviews").glob("*.json")).read_bytes()
+    repeated = run_autoprove(root, admit=True)
 
     assert result.proven_candidates == 1
     assert result.residual_candidates == 0
     assert result.complete_units == 1
     assert result.admitted_units == 1
+    assert repeated.admitted_units == 1
+    assert repeated.summary_path.read_bytes() == first_summary
+    assert next((root / "reviews").glob("*.json")).read_bytes() == first_review
     assert check_all_certificates(root) == {
         "checked_certificate_count": 1,
         "residual_candidate_count": 0,
@@ -438,6 +444,21 @@ def test_autoprove_checks_admits_and_finalizes_x86_certificate(tmp_path: Path) -
     assert ledger["decisions"][0]["candidate_id"] == "candidate-1"
     assert ledger["decisions"][0]["decision"] == "not_bug"
     assert ledger["decisions"][0]["basis"] == "verified_modeling_error"
+
+
+def test_repeated_autoprove_preserves_separately_authored_valid_review(tmp_path: Path) -> None:
+    root = _prepare(tmp_path, [_state("candidate-1")], _elf_with_calls(0x100))
+    run_autoprove(root, admit=True)
+    review_path = next((root / "reviews").glob("*.json"))
+    review = json.loads(review_path.read_text())
+    review["decisions"][0]["rationale"] += " Independently reviewed."
+    review_path.write_text(json.dumps(review))
+
+    repeated = run_autoprove(root, admit=True)
+    preserved = json.loads(review_path.read_text())
+
+    assert repeated.admitted_units == 1
+    assert preserved["decisions"][0]["rationale"].endswith("Independently reviewed.")
 
 
 def test_certificate_checker_rejects_tampered_proof(tmp_path: Path) -> None:
@@ -1250,8 +1271,121 @@ def test_blobmsg_table_initialization_contract_is_admitted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    root = _prepare_blobmsg_table_campaign(
+        tmp_path,
+        monkeypatch,
+        candidate_id="candidate-table",
+        source_text=(
+            "static void\n"
+            "target(void)\n"
+            "{\n"
+            "    struct blob_attr *tb[MAX_ATTR], *cur;\n"
+            "    blobmsg_parse(policy, MAX_ATTR, tb, data, len);\n"
+            "    log_debug(\"target(\");\n"
+            "    if ((cur = tb[ATTR_NAME]) != NULL) {\n"
+            "        use(cur);\n"
+            "    }\n"
+            "}\n"
+        ),
+        source_line=8,
+    )
+
+    result = run_autoprove(root, admit=True)
+
+    assert result.proven_candidates == 1
+    assert result.admitted_units == 1
+    summary = json.loads(result.summary_path.read_text())
+    assert summary["counts_by_rule"] == {
+        "libubox_blobmsg_parse_initializes_table_v1": 1
+    }
+    certificate = json.loads(next((root / "autoprove" / "runs").glob("*/certificates/*.json")).read_text())
+    assert certificate["proof"]["source_excerpt"]["table_access"]["kind"] == (
+        "enclosing_table_alias_assignment"
+    )
+    decision = json.loads(next((root / "reviews").glob("*.json")).read_text())["decisions"][0]
+    assert decision["obligations"]["all_path_initialization"]["status"] == "satisfied"
+    assert finalize_campaign(root).ledger_path.is_file()
+
+
+@pytest.mark.parametrize(
+    ("parse_count", "guard", "expected_reason"),
+    [
+        (
+            "MAX_ATTR - 1",
+            "if ((cur = tb[ATTR_NAME]) != NULL) {",
+            "blobmsg parser count is not proven equal to table capacity",
+        ),
+        (
+            "MAX_ATTR",
+            "if (enabled || (cur = tb[ATTR_NAME]) != NULL) {",
+            "exact source operation does not read a parsed attribute table",
+        ),
+    ],
+)
+def test_blobmsg_table_proof_rejects_unsafe_counterexamples(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    parse_count: str,
+    guard: str,
+    expected_reason: str,
+) -> None:
+    root = _prepare_blobmsg_table_campaign(
+        tmp_path,
+        monkeypatch,
+        candidate_id="candidate-unsafe-table",
+        source_text=(
+            "static void target(void)\n"
+            "{\n"
+            "    struct blob_attr *tb[MAX_ATTR], *cur;\n"
+            f"    blobmsg_parse(policy, {parse_count}, tb, data, len);\n"
+            f"    {guard}\n"
+            "        use(cur);\n"
+            "    }\n"
+            "}\n"
+        ),
+        source_line=6,
+    )
+
+    result = run_autoprove(root)
+
+    assert result.proven_candidates == 0
+    assert check_all_certificates(root)["checked_certificate_count"] == 0
+    residual = json.loads(result.residual_queue_path.read_text())
+    attempt = next(
+        item
+        for item in residual["residual_candidates"][0]["attempts"]
+        if item["rule_id"] == "libubox_blobmsg_parse_initializes_table_v1"
+    )
+    assert attempt["reason"] == expected_reason
+
+
+def test_blobmsg_table_alias_accepts_immediate_unbraced_guard() -> None:
+    lines = (
+        "static void target(struct blob_attr **tb)\n"
+        "{\n"
+        "    struct blob_attr *cur;\n"
+        "    if ((cur = tb[ATTR_NAME]))\n"
+        "        use(cur);\n"
+        "}\n"
+    ).splitlines()
+
+    result = checker_module._enclosing_blobmsg_table_alias(lines, 5, lines[4])
+
+    assert result is not None
+    assert result["kind"] == "unbraced_table_alias_assignment"
+    assert result["table_index"] == "ATTR_NAME"
+
+
+def _prepare_blobmsg_table_campaign(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    candidate_id: str,
+    source_text: str,
+    source_line: int,
+) -> Path:
     state = _state(
-        "candidate-table",
+        candidate_id,
         operation_offset=0x120,
         successor_literal=False,
         vulnerability_type="uninitialized_memory_use",
@@ -1260,16 +1394,7 @@ def test_blobmsg_table_initialization_contract_is_admitted(
     source_root = root / "sources" / "demo"
     source_root.mkdir(parents=True)
     source_path = source_root / "target.c"
-    source_path.write_text(
-        "static void\n"
-        "target(void)\n"
-        "{\n"
-        "    struct blob_attr *tb[MAX_ATTR];\n"
-        "    blobmsg_parse(policy, MAX_ATTR, tb, data, len);\n"
-        "    if (tb[ATTR_NAME])\n"
-        "        use(tb[ATTR_NAME]);\n"
-        "}\n"
-    )
+    source_path.write_text(source_text)
     sdk_hash = _add_source_reference_mapping(root, source_root)
     package_file = root / "sdk" / "libubox.Makefile"
     source_archive = root / "sdk" / "libubox.tar.zst"
@@ -1304,7 +1429,7 @@ def test_blobmsg_table_initialization_contract_is_admitted(
         checker_module,
         "_addr2line_frames",
         lambda _reference, _address: [
-            {"function": "target", "path": "demo/target.c", "line": 6}
+            {"function": "target", "path": "demo/target.c", "line": source_line}
         ],
     )
     monkeypatch.setattr(
@@ -1312,18 +1437,7 @@ def test_blobmsg_table_initialization_contract_is_admitted(
         "_libubox_blobmsg_contract",
         lambda _context, _mapping, **_kwargs: dependency,
     )
-
-    result = run_autoprove(root, admit=True)
-
-    assert result.proven_candidates == 1
-    assert result.admitted_units == 1
-    summary = json.loads(result.summary_path.read_text())
-    assert summary["counts_by_rule"] == {
-        "libubox_blobmsg_parse_initializes_table_v1": 1
-    }
-    decision = json.loads(next((root / "reviews").glob("*.json")).read_text())["decisions"][0]
-    assert decision["obligations"]["all_path_initialization"]["status"] == "satisfied"
-    assert finalize_campaign(root).ledger_path.is_file()
+    return root
 
 
 def test_blobmsg_parameter_table_is_proven_from_sole_caller(
@@ -1598,6 +1712,168 @@ def test_checked_calloc_a_outputs_are_admitted(
     decision = json.loads(next((root / "reviews").glob("*.json")).read_text())["decisions"][0]
     assert decision["obligations"]["all_path_initialization"]["status"] == "satisfied"
     assert finalize_campaign(root).ledger_path.is_file()
+
+
+def test_unchecked_calloc_a_pattern_requires_immediate_unguarded_use() -> None:
+    unsafe = (
+        "static void target(const char *input)\n"
+        "{\n"
+        "    struct item *item;\n"
+        "    char *output;\n"
+        "    item = calloc_a(sizeof(*item), &output, strlen(input) + 1);\n"
+        "    item->value = strcpy(output, input);\n"
+        "}\n"
+    ).splitlines()
+
+    result = checker_module._unchecked_calloc_a_source_pattern(
+        unsafe,
+        function="target",
+        use_line=6,
+    )
+
+    assert result["primary"] == "item"
+    assert result["output"] == "output"
+    assert result["allocation_line"] == 5
+
+    guarded = unsafe[:5] + ["    if (!item)", "        return;"] + unsafe[5:]
+    with pytest.raises(
+        checker_module.RuleNotApplicable,
+        match="not the immediate next statement",
+    ):
+        checker_module._unchecked_calloc_a_source_pattern(
+            guarded,
+            function="target",
+            use_line=8,
+        )
+
+
+def test_registered_ubus_string_entry_requires_registered_object(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    source_path = source_root / "ubus.c"
+    source_path.write_text(
+        "static int add_dynamic(struct blob_attr *msg)\n"
+        "{\n"
+        "    struct blob_attr *tb[MAX];\n"
+        "    const char *name;\n"
+        "    blobmsg_parse(policy, MAX, tb, blob_data(msg), blob_len(msg));\n"
+        "    if (!tb[NAME])\n"
+        "        return 1;\n"
+        "    name = blobmsg_get_string(tb[NAME]);\n"
+        "    target(name, msg);\n"
+        "    return 0;\n"
+        "}\n"
+        "static struct ubus_method methods[] = {\n"
+        "    UBUS_METHOD(\"add_dynamic\", add_dynamic, policy),\n"
+        "};\n"
+        "static struct ubus_object object = {\n"
+        "    .methods = methods,\n"
+        "};\n"
+    )
+    dummy_binary = tmp_path / "dummy"
+    dummy_binary.write_bytes(b"dummy")
+    context = CampaignContext(
+        root=tmp_path,
+        manifest={},
+        candidate={},
+        state={},
+        binding={},
+        input_row={},
+        binary_path=dummy_binary,
+        export_manifest={},
+    )
+
+    with pytest.raises(
+        checker_module.RuleNotApplicable,
+        match="no unique registered ubus callback",
+    ):
+        checker_module._registered_ubus_string_entry_contract(
+            context,
+            source_root,
+            callee="target",
+        )
+
+    source_path.write_text(source_path.read_text() + "void init(void) { ubus_add_object(&object); }\n")
+    context.shared_cache.clear()
+    result = checker_module._registered_ubus_string_entry_contract(
+        context,
+        source_root,
+        callee="target",
+    )
+
+    assert result["callback"] == "add_dynamic"
+    assert result["method"] == "add_dynamic"
+    assert result["request_string"] == "name"
+    assert result["call_line"] == 9
+
+
+def test_registered_ubus_callback_is_recovered_from_frozen_method_table(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frozen = bytearray(_elf_with_calls())
+    struct.pack_into("<H", frozen, 16, 2)  # ET_EXEC
+    struct.pack_into("<I", frozen, 68, 7)  # one readable/writable/executable test segment
+    frozen[0x300 : 0x30C] = b"add_dynamic\0"
+    struct.pack_into("<QQ", frozen, 0x380, 0x300, 0x100)
+    frozen_path = tmp_path / "frozen"
+    frozen_path.write_bytes(frozen)
+    reference_path = tmp_path / "reference"
+    reference_path.write_bytes(bytes(frozen))
+    fingerprint = {
+        "normalized_function_sha256": "1" * 64,
+        "constant_signature_sha256": "2" * 64,
+        "call_topology_sha256": "3" * 64,
+        "control_flow_sha256": "4" * 64,
+        "relocation_shape_sha256": "5" * 64,
+        "instruction_offsets": [0],
+    }
+    context = CampaignContext(
+        root=tmp_path,
+        manifest={},
+        candidate={},
+        state={},
+        binding={},
+        input_row={},
+        binary_path=frozen_path,
+        export_manifest={},
+    )
+    monkeypatch.setattr(
+        checker_module,
+        "_reference_function_index",
+        lambda _context, _path: {
+            5: [{"address": 0x180, "names": ["add_dynamic.lto_priv.0"], **fingerprint}]
+        },
+    )
+    monkeypatch.setattr(
+        checker_module,
+        "_reference_struct_layout",
+        lambda _context, _mapping, _name: {
+            "name": "ubus_method",
+            "size_bytes": 48,
+            "members": [
+                {"name": "name", "offset_bytes": 0, "size_bytes": 8},
+                {"name": "handler", "offset_bytes": 8, "size_bytes": 8},
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        checker_module,
+        "_normalized_function_fingerprint",
+        lambda _path, _address, _size: dict(fingerprint),
+    )
+
+    result = checker_module._registered_ubus_callback_binary_binding(
+        context,
+        {"mapping": {"reference_binary": {"path": reference_path.name}}},
+        callback="add_dynamic",
+        method="add_dynamic",
+    )
+
+    assert result["surface_kind"] == "registered_ubus_callback"
+    assert result["method_record_address"] == "0x380"
+    assert result["handler_address"] == "0x100"
+    assert result["mapping_basis"] == "ubus_method_record_plus_function_fingerprint"
 
 
 def test_libubox_foreach_macro_initializes_loop_locals(
@@ -1938,6 +2214,85 @@ def test_checked_stat_output_initialization_is_admitted(
         "c_checked_api_output_initialization_v1": 1
     }
     assert finalize_campaign(root).ledger_path.is_file()
+
+
+def test_stat_family_path_proof_accepts_terminating_goto_route() -> None:
+    lines = (
+        "static void target(const char *path)\n"
+        "{\n"
+        "    struct stat st;\n"
+        "    if (lstat(path, &st) < 0) {\n"
+        "        if (skip)\n"
+        "            goto finished;\n"
+        "        return;\n"
+        "    }\n"
+        "    use(st.st_mode);\n"
+        "finished:\n"
+        "    return;\n"
+        "}\n"
+    ).splitlines()
+    initialization = checker_module._stat_family_failure_blocks(lines, "st", 9)[0]
+
+    proof = checker_module._stat_output_path_proof(
+        lines,
+        output="st",
+        use_line=9,
+        initialization=initialization,
+    )
+
+    assert proof is not None
+    assert proof["kind"] == "failure_routes_terminate_or_skip_use"
+
+
+def test_stat_family_path_proof_rejects_fallthrough_failure() -> None:
+    lines = (
+        "static void target(const char *path)\n"
+        "{\n"
+        "    struct stat st;\n"
+        "    if (lstat(path, &st) < 0) {\n"
+        "        warn();\n"
+        "    }\n"
+        "    use(st.st_mode);\n"
+        "}\n"
+    ).splitlines()
+    initialization = checker_module._stat_family_failure_blocks(lines, "st", 7)[0]
+
+    proof = checker_module._stat_output_path_proof(
+        lines,
+        output="st",
+        use_line=7,
+        initialization=initialization,
+    )
+
+    assert proof is None
+
+
+def test_stat_family_success_flag_rejects_true_assignment_outside_success_branch() -> None:
+    lines = (
+        "static void target(const char *path)\n"
+        "{\n"
+        "    struct stat st;\n"
+        "    int exists = 0;\n"
+        "    if (lstat(path, &st) < 0) {\n"
+        "        exists = 1;\n"
+        "    } else {\n"
+        "        consume_path(path);\n"
+        "    }\n"
+        "    if (exists) {\n"
+        "        use(st.st_mode);\n"
+        "    }\n"
+        "}\n"
+    ).splitlines()
+    initialization = checker_module._stat_family_failure_blocks(lines, "st", 11)[0]
+
+    proof = checker_module._stat_output_path_proof(
+        lines,
+        output="st",
+        use_line=11,
+        initialization=initialization,
+    )
+
+    assert proof is None
 
 
 def test_dominating_nonnull_guard_is_admitted(
