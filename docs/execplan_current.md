@@ -34,7 +34,7 @@ The observable outcome is a campaign below `.ai/runs/openwrt-more-binaries-v1` w
 - [ ] Continue resolving the 717 residuals by general semantic cluster. The largest current units are 13 `netifd` definite-assignment rows in `FUN_00409d1c`, 11 `busybox` rows in `FUN_004480cc`, and 11 `netifd` rows in `FUN_0040ba5d`. Direct-model and coding-agent providers remain unavailable in this environment, so no provider output has authorized a decision.
 - [x] (2026-07-14 20:15Z) Completed repository-wide validation: 1,007 tests passed and five skipped; `compileall` succeeded; `pip check` reported no broken requirements. The independent campaign check reproduced all 259 certificates and 717 residuals.
 - [x] (2026-07-14 18:56Z) Committed and published the earlier 1,171-record milestone to `origin/main` as `b4b2637`. No generated run artifact was committed; that superseded campaign correctly emitted no final ledger while 822 rows lacked affirmative proof.
-- [ ] Commit and publish the exact-operation iteration. Generated `.ai/runs` evidence remains ignored and must not be committed.
+- [x] (2026-07-14 20:18Z) Committed the exact-operation iteration as `b6b4c03`, pushed `agent/enforce-exact-pcode-adjudication`, and opened draft PR #1 against `main`. Generated `.ai/runs` evidence remains ignored and was not committed.
 
 ## Surprises & Discoveries
 
