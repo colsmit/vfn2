@@ -24,7 +24,7 @@ The main demonstration is a clean rerun of the frozen 218-candidate OpenWrt camp
 - [x] (2026-07-14 17:29Z) Ran the existing frozen campaign unattended under tool run `59597ef9ac95293a`: 218 certificates, zero residuals, two semantic bug rows, one semantic `not_bug` row, one root group, one nearby allocation defect, and no model calls. An independent check re-derived all 218 certificates.
 - [x] (2026-07-14 18:04Z) Finished adversarial and holdout coverage for renamed/shifted spatial stores, a guarded spatial variant, first/later null dereferences, proposal and certificate tampering, provider escalation, CFG-proof admission, and relocatable absolute DWARF paths.
 - [x] (2026-07-14 18:01Z) Created `.ai/runs/openwrt-four-binary-adjudication-autonomous-acceptance` from frozen inputs with no reviews or generated decisions. One unattended pass admitted all 109 units and independently rechecked all 218 certificates. Finalization twice produced byte-identical hashes: ledger `e43451e6303d63bfe2daa6274e525947b5bf7ee8d3a808b0d33dfd8d220fb04f`, derived states `5804d22a799b46264534d3f1a27ec17905f726ee8401288e6f8f43a70082a8ea`, reports `a435f4bf016a64915bfba75714b9f2b59a0996e3ea04485ca0fb80a99a7a4cb2`, summary `52173b5c61810e85a31bf3d321b37df67a66c959d08756580cbb57fc89b2fc15`, and root groups `c433a973b5f1fcaae308d1dd8ec4bda928a014a9fffecae06e1a0d00bfa47814`.
-- [ ] Run the full repository verification commands and publish the completed milestone.
+- [x] (2026-07-14 18:10Z) Ran the full verification suite (`965 passed, 5 skipped`), compileall, and `pip check`; committed the milestone and pushed it to `origin/main` in `colsmit/vfn2`.
 
 ## Surprises & Discoveries
 
@@ -231,3 +231,5 @@ In `src/binary_agent/adjudication_verifier.py`, define:
 Use only the Python standard library and existing project dependencies unless a parser prototype proves that a new dependency materially improves soundness and can be pinned. Direct API calls must remain in scripts or provider adapters so importing the core package never requires network access. Coding-agent commands are external optional tools and must not become package dependencies.
 
 Revision note (2026-07-14 15:28Z): replaced the completed binary-adjudication plan with the autonomous, tiered, verifier-gated adjudication milestone after the OpenWrt audit showed that replayable hand-written rules were the principal obstacle to a genuinely automated pipeline.
+
+Revision note (2026-07-14 18:10Z): completed the milestone after a clean 218-candidate run, independent certificate recheck, deterministic double finalization, holdout/adversarial suite, and full repository verification.
