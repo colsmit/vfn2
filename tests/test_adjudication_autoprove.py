@@ -1048,33 +1048,45 @@ def test_source_proven_bug_stays_separate_from_report_gate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = _state(
-        "candidate-path-overflow",
+        "renamed-boundary-store",
         operation_offset=0x120,
         successor_literal=False,
         vulnerability_type="out_of_bounds_write",
     )
-    root = _prepare(tmp_path, [state], _elf_with_calls())
-    source_root = root / "sources" / "demo"
-    source_root.mkdir(parents=True)
-    lines = [""] * 271
-    lines[135] = "uh_path_lookup(struct client *cl, const char *url)"
-    lines[136] = "{"
-    lines[137] = "    static char path_phys[PATH_MAX];"
-    lines[138] = "    pathptr = path_phys + strlen(path_phys);"
-    lines[139] = "    if (pathptr[-1] != '/') {"
-    lines[237] = "        pathptr[0] = '/';"
-    lines[238] = "        pathptr[1] = 0;"
-    lines[239] = "        pathptr++;"
-    lines[240] = "    }"
-    lines[250] = "    len = path_phys + sizeof(path_phys) - pathptr - 1;"
-    lines[251] = "    list_for_each_entry(idx, &index_files, list) {"
-    lines[270] = "        *pathptr = 0;"
-    lines[100] = "void uh_handle_request(struct client *cl)"
-    (source_root / "file.c").write_text("\n".join(lines) + "\n")
-    (source_root / "main.c").write_text(
-        'uh_index_add("index.html");\nuh_index_add("index.htm");\n'
+    manifest = _manifest([state])
+    manifest["functions"][0]["pcode_stores"][0]["write_width"] = 2
+    manifest["entry_surfaces"] = [
+        {
+            "kind": "registered_callback",
+            "function_address": state["location"]["address"],
+            "name": "shifted_worker",
+        }
+    ]
+    root = _prepare(
+        tmp_path,
+        [state],
+        _elf_with_calls(),
+        manifest_payload=manifest,
     )
-    (source_root / "client.c").write_text("uh_handle_request(cl);\n")
+    source_root = root / "sources" / "shifted"
+    source_root.mkdir(parents=True)
+    source_path = source_root / "worker.c"
+    source_path.write_text(
+        "#include <stdlib.h>\n"
+        "static void shifted_worker(const char *request)\n"
+        "{\n"
+        "    static char storage[16];\n"
+        "    char *cursor;\n"
+        "    if (!realpath(request, storage))\n"
+        "        return;\n"
+        "    cursor = storage + strlen(storage);\n"
+        "    if (cursor[-1] != '/') {\n"
+        "        cursor[0] = '/';\n"
+        "        cursor[1] = 0;\n"
+        "        cursor++;\n"
+        "    }\n"
+        "}\n"
+    )
     sdk_hash = _add_source_reference_mapping(root, source_root)
     monkeypatch.setattr(checker_module, "_git_head", lambda _root: "a" * 40)
     monkeypatch.setattr(adjudication_module, "_git_head", lambda _root: "a" * 40)
@@ -1087,7 +1099,7 @@ def test_source_proven_bug_stays_separate_from_report_gate(
         checker_module,
         "_addr2line_frames",
         lambda _reference, _address: [
-            {"function": "uh_path_lookup", "path": "demo/file.c", "line": 238}
+            {"function": "shifted_worker", "path": "shifted/worker.c", "line": 10}
         ],
     )
 
@@ -1099,6 +1111,14 @@ def test_source_proven_bug_stays_separate_from_report_gate(
     assert review["decisions"][0]["basis"] == "exact_source_feasible_violation"
     finalized = finalize_campaign(root)
     assert json.loads(finalized.reports_path.read_text())["vulnerabilities"] == []
+
+    summary = json.loads(result.summary_path.read_text())
+    certificate_path = root / summary["certificates"][0]["path"]
+    certificate = json.loads(certificate_path.read_text())
+    certificate["proof"]["rule_claim"] = "provider prose replaced the checked proof"
+    certificate_path.write_text(json.dumps(certificate))
+    with pytest.raises(CertificateError, match="proof differs"):
+        check_certificate(root, certificate_path)
 
 
 def _add_fake_reference_mapping(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:

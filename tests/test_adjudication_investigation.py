@@ -16,6 +16,7 @@ from binary_agent.adjudication_investigation import (
     PROPOSAL_KIND,
     build_investigation_pack,
     check_investigation_pack,
+    run_investigation_stage,
     run_provider_attempt,
 )
 from binary_agent.adjudication_verifier import (
@@ -36,12 +37,14 @@ from scripts import llm_adjudication_provider
 def _source_bound_campaign(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    vulnerability_type: str = "null_pointer_dereference",
 ) -> tuple[Path, Path, str]:
     state = _state(
         "holdout-candidate",
         operation_offset=0x120,
         successor_literal=False,
-        vulnerability_type="null_pointer_dereference",
+        vulnerability_type=vulnerability_type,
     )
     root = _prepare(tmp_path, [state], _elf_with_calls(), manifest_payload=_manifest([state]))
     source_root = root / "sources" / "demo"
@@ -639,3 +642,68 @@ def test_autonomous_verifier_has_no_frozen_candidate_or_source_line_rules() -> N
     assert not re.search(r"\b[0-9a-f]{16}\b", source)
     assert "required_source_line" not in source
     assert "suppression" not in source.lower()
+
+
+def test_investigation_stage_groups_deterministic_holdouts_without_model_calls(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, _pack_paths, packs = _spatial_campaign(tmp_path, monkeypatch)
+
+    result = run_investigation_stage(
+        root,
+        direct_provider=None,
+        agent_provider=None,
+        output_dir=root / "autonomous-stage",
+        candidate_ids=[pack["candidate_id"] for pack in packs],
+    )
+
+    assert len(result.verified) == 2
+    assert result.residual_candidate_ids == ()
+    assert result.direct_attempt_count == 0
+    assert result.agent_attempt_count == 0
+    assert result.root_cause_group_count == 1
+    summary = json.loads(result.summary_path.read_text())
+    groups_path = root / summary["root_cause_groups"]["path"]
+    groups = json.loads(groups_path.read_text())
+    assert groups["groups"][0]["candidate_ids"] == [
+        "shifted-store-a",
+        "shifted-store-b",
+    ]
+
+
+def test_investigation_stage_escalates_unverified_direct_proposal_to_agent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, _source, candidate_id = _source_bound_campaign(
+        tmp_path,
+        monkeypatch,
+        vulnerability_type="uninitialized_memory_use",
+    )
+
+    class EscalatingProvider:
+        def __init__(self) -> None:
+            self.tiers: list[str] = []
+
+        def investigate(self, pack: dict, *, tier: str) -> dict:
+            self.tiers.append(tier)
+            proposal = _proposal(pack["candidate_id"])
+            proposal["claim_kind"] = "unresolved"
+            return proposal
+
+    provider = EscalatingProvider()
+    result = run_investigation_stage(
+        root,
+        direct_provider=provider,
+        agent_provider=provider,
+        output_dir=root / "autonomous-stage",
+        direct_call_cap=1,
+        agent_call_cap=1,
+    )
+
+    assert provider.tiers == ["direct", "agent"]
+    assert result.direct_attempt_count == 1
+    assert result.agent_attempt_count == 1
+    assert result.residual_candidate_ids == (candidate_id,)
+    assert result.verified == {}

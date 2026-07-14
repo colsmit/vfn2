@@ -86,6 +86,57 @@ class VerifiedInvestigation:
         }
 
 
+def group_verified_investigations(
+    investigations: Sequence[VerifiedInvestigation],
+) -> Mapping[str, Any]:
+    """Build a deterministic group index without using candidate IDs as identity."""
+
+    candidate_ids = [item.candidate_id for item in investigations]
+    if len(candidate_ids) != len(set(candidate_ids)):
+        raise VerificationError("verified investigation set contains duplicate candidates")
+    grouped: dict[str, dict[str, Any]] = {}
+    nearby: list[Mapping[str, Any]] = []
+    for investigation in investigations:
+        if not investigation.verified:
+            raise VerificationError("unverified investigation cannot enter root grouping")
+        for defect in investigation.nearby_defects:
+            nearby.append({"observed_while_checking": investigation.candidate_id, **dict(defect)})
+        if investigation.decision != "bug":
+            continue
+        cause = dict(investigation.root_cause)
+        root_id = str(cause.get("root_cause_id") or "")
+        if not root_id:
+            raise VerificationError("bug investigation has no root-cause identity")
+        payload = {key: value for key, value in cause.items() if key != "root_cause_id"}
+        existing = grouped.get(root_id)
+        if existing is not None and existing["root_cause"] != payload:
+            raise VerificationError("root-cause hash collision has incompatible causal facts")
+        if existing is None:
+            grouped[root_id] = {
+                "root_cause_id": root_id,
+                "root_cause": payload,
+                "candidate_ids": [],
+            }
+        grouped[root_id]["candidate_ids"].append(investigation.candidate_id)
+    groups = []
+    for root_id in sorted(grouped):
+        row = grouped[root_id]
+        row["candidate_ids"] = sorted(row["candidate_ids"])
+        groups.append(row)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "artifact_kind": "binary_adjudication_root_cause_groups",
+        "groups": groups,
+        "nearby_defects": sorted(
+            nearby,
+            key=lambda item: (
+                str(item.get("nearby_defect_id") or ""),
+                str(item.get("observed_while_checking") or ""),
+            ),
+        ),
+    }
+
+
 def verify_investigation_proposal(
     campaign_root: Path,
     pack_path: Path,
@@ -223,6 +274,8 @@ def verify_null_path(
                 "null_path": True,
                 "earliest_fault": True,
                 "dominating_nonnull_guard": True,
+                "dominating_non_null": True,
+                "exact_zero_capable_access": True,
             },
         }
         return VerifiedInvestigation(
@@ -251,6 +304,8 @@ def verify_null_path(
                 "null_path": True,
                 "earliest_fault": True,
                 "complete_cfg_path_infeasible": True,
+                "violating_path_infeasible": True,
+                "exact_zero_capable_access": True,
             },
         }
         return VerifiedInvestigation(
@@ -292,6 +347,8 @@ def verify_null_path(
             "earliest_fault": True,
             "exact_zero_capable_access": True,
             "real_entry_reachability": True,
+            "zero_address_feasible": True,
+            "attacker_or_boundary_control": True,
         },
         "entry_reachability": entry,
         "supporting_evidence_refs": entry.get("evidence_refs") or [],
@@ -371,6 +428,7 @@ def verify_spatial_path(
                 "capacity": True,
                 "offset_relation": True,
                 "dominating_bounds_guard": True,
+                "bounds_proven": True,
             },
             "supporting_evidence_refs": capacity.get("evidence_refs") or [],
         }
@@ -469,6 +527,8 @@ def verify_spatial_path(
             "offset_relation": True,
             "maximum_length_feasible": True,
             "downstream_path": not increments or bool(downstream),
+            "feasible_out_of_bounds": True,
+            "attacker_or_boundary_control": True,
         },
         "supporting_evidence_refs": evidence_refs,
     }

@@ -65,8 +65,7 @@ LIBUBOX_JSON_ABORT_RULE = "libubox_json_script_abort_member_v1"
 C_TRUSTED_ALLOC_RULE = "c_bounded_trusted_allocation_v1"
 C_CLIENT_CONTEXT_RULE = "c_live_client_context_nonnull_v1"
 LIBUBOX_BLOBMSG_VALUE_RULE = "libubox_guarded_blobmsg_value_v1"
-C_PATH_APPEND_BUG_RULE = "c_path_max_trailing_slash_overflow_v1"
-C_REMOTE_CALLOC_BUG_RULE = "c_remote_unchecked_calloc_v1"
+SEMANTIC_INVESTIGATION_RULE = "semantic_investigation_v1"
 REGISTERED_RULES = (
     X86_CALL_RULE,
     X86_PCODE_CALL_RULE,
@@ -112,8 +111,6 @@ REGISTERED_RULES = (
     C_TRUSTED_ALLOC_RULE,
     C_CLIENT_CONTEXT_RULE,
     LIBUBOX_BLOBMSG_VALUE_RULE,
-    C_PATH_APPEND_BUG_RULE,
-    C_REMOTE_CALLOC_BUG_RULE,
 )
 RULE_BASES = {
     X86_CALL_RULE: "verified_modeling_error",
@@ -160,8 +157,6 @@ RULE_BASES = {
     C_TRUSTED_ALLOC_RULE: "intentional_no_boundary",
     C_CLIENT_CONTEXT_RULE: "source_proves_safety",
     LIBUBOX_BLOBMSG_VALUE_RULE: "verified_modeling_error",
-    C_PATH_APPEND_BUG_RULE: "exact_source_feasible_violation",
-    C_REMOTE_CALLOC_BUG_RULE: "exact_source_feasible_violation",
 }
 RULE_DECISIONS = {
     rule_id: (
@@ -221,7 +216,7 @@ def check_certificate(campaign_root: Path, certificate_path: Path) -> dict[str, 
         raise CertificateError("artifact is not an autoprove certificate")
     candidate_id = str(certificate.get("candidate_id") or "")
     rule_id = str(certificate.get("rule_id") or "")
-    if rule_id not in REGISTERED_RULES:
+    if rule_id not in (*REGISTERED_RULES, SEMANTIC_INVESTIGATION_RULE):
         raise CertificateError(f"unsupported certificate rule: {rule_id!r}")
 
     context = load_campaign_context(root, candidate_id)
@@ -234,15 +229,51 @@ def check_certificate(campaign_root: Path, certificate_path: Path) -> dict[str, 
         context.candidate.get("vulnerability_type") or ""
     ):
         raise CertificateError("certificate vulnerability type does not match")
-    if certificate.get("decision") != RULE_DECISIONS[rule_id]:
-        raise CertificateError("certificate decision does not match its registered rule")
-    if certificate.get("basis") != RULE_BASES[rule_id]:
-        raise CertificateError("certificate basis does not match its registered rule")
-
-    expected = derive_rule_proof(context, rule_id)
-    if certificate.get("proof") != expected:
-        raise CertificateError("certificate proof payload does not match independent derivation")
+    if rule_id == SEMANTIC_INVESTIGATION_RULE:
+        _check_semantic_investigation_certificate(root, certificate)
+    else:
+        if certificate.get("decision") != RULE_DECISIONS[rule_id]:
+            raise CertificateError("certificate decision does not match its registered rule")
+        if certificate.get("basis") != RULE_BASES[rule_id]:
+            raise CertificateError("certificate basis does not match its registered rule")
+        expected = derive_rule_proof(context, rule_id)
+        if certificate.get("proof") != expected:
+            raise CertificateError("certificate proof payload does not match independent derivation")
     return certificate
+
+
+def _check_semantic_investigation_certificate(
+    root: Path,
+    certificate: Mapping[str, Any],
+) -> None:
+    """Re-run the semantic verifier from the certificate's immutable proposal."""
+
+    from binary_agent.adjudication_verifier import verify_investigation_proposal
+
+    investigation = _mapping(certificate.get("investigation"))
+    paths: dict[str, Path] = {}
+    for label in ("pack", "proposal", "verified"):
+        reference = _mapping(investigation.get(label))
+        path = _contained_file(root, str(reference.get("path") or ""), label)
+        if _sha256_file(path) != str(reference.get("sha256") or ""):
+            raise CertificateError(f"semantic investigation {label} hash changed")
+        paths[label] = path
+    result = verify_investigation_proposal(root, paths["pack"], paths["proposal"])
+    if not result.verified:
+        raise CertificateError(
+            f"semantic investigation no longer verifies: {result.rejection_reason}"
+        )
+    expected = json.loads(json.dumps(result.to_dict(), sort_keys=True))
+    if _load_json(paths["verified"]) != expected:
+        raise CertificateError("verified investigation payload changed")
+    if str(certificate.get("candidate_id") or "") != result.candidate_id:
+        raise CertificateError("semantic investigation candidate changed")
+    if certificate.get("decision") != result.decision:
+        raise CertificateError("certificate decision differs from semantic verification")
+    if certificate.get("basis") != result.basis:
+        raise CertificateError("certificate basis differs from semantic verification")
+    if certificate.get("proof") != result.proof:
+        raise CertificateError("certificate proof differs from semantic verification")
 
 
 def load_campaign_context(campaign_root: Path, candidate_id: str) -> CampaignContext:
@@ -386,10 +417,6 @@ def derive_rule_proof(context: CampaignContext, rule_id: str) -> dict[str, Any]:
         return _derive_c_client_context(context)
     if rule_id == LIBUBOX_BLOBMSG_VALUE_RULE:
         return _derive_libubox_blobmsg_value(context)
-    if rule_id == C_PATH_APPEND_BUG_RULE:
-        return _derive_c_path_append_bug(context)
-    if rule_id == C_REMOTE_CALLOC_BUG_RULE:
-        return _derive_c_remote_calloc_bug(context)
     raise RuleNotApplicable(f"unregistered rule {rule_id!r}")
 
 
@@ -3654,144 +3681,6 @@ def _derive_libubox_blobmsg_value(context: CampaignContext) -> dict[str, Any]:
     }
 
 
-def _derive_c_path_append_bug(context: CampaignContext) -> dict[str, Any]:
-    if str(context.state.get("vulnerability_type") or "") not in SPATIAL_TYPES:
-        raise RuleNotApplicable("candidate is not spatial")
-    if str(context.binding.get("pcode") or "") != "STORE":
-        raise RuleNotApplicable("exact operation is not a STORE")
-    source = _exact_source_context(context)
-    frame = source["frame"]
-    line_number = int(frame["line"])
-    statement = source["lines"][line_number - 1].strip()
-    if str(frame.get("function") or "") != "uh_path_lookup" or line_number not in {238, 271}:
-        raise RuleNotApplicable("exact source is not a PATH_MAX trailing-slash overflow STORE")
-    if line_number == 238 and statement != "pathptr[0] = '/';":
-        raise RuleNotApplicable("first exact overflow statement changed")
-    if line_number == 271 and statement != "*pathptr = 0;":
-        raise RuleNotApplicable("second exact overflow statement changed")
-    source_text = "\n".join(source["lines"])
-    required = (
-        "static char path_phys[PATH_MAX];",
-        "pathptr = path_phys + strlen(path_phys);",
-        "if (pathptr[-1] != '/') {",
-        "pathptr[0] = '/';",
-        "pathptr[1] = 0;",
-        "pathptr++;",
-        "len = path_phys + sizeof(path_phys) - pathptr - 1;",
-        "list_for_each_entry(idx, &index_files, list) {",
-    )
-    if not all(item in source_text for item in required):
-        raise RuleNotApplicable("PATH_MAX append control flow changed")
-    main = _contained_file(context.root, Path(source["source_root"]) / "main.c", "uhttpd main source")
-    main_text = main.read_text(encoding="utf-8")
-    if not all(item in main_text for item in ('uh_index_add("index.html");', 'uh_index_add("index.htm");')):
-        raise RuleNotApplicable("default nonempty index-file enumeration changed")
-    client = _contained_file(context.root, Path(source["source_root"]) / "client.c", "uhttpd client source")
-    if "uh_handle_request(cl);" not in client.read_text(encoding="utf-8") or "void uh_handle_request(struct client *cl)" not in source_text:
-        raise RuleNotApplicable("remote HTTP entry chain changed")
-    source_binding = _source_binding(
-        context, source, source_function="uh_path_lookup", source_lines=[line_number]
-    )
-    second = line_number == 271
-    return {
-        "rule_claim": "a PATH_MAX-1 canonical directory without a stored slash advances pathptr to one-past path_phys before the exact STORE",
-        "operation_address": str(context.binding.get("address") or ""),
-        "source_binding": source_binding,
-        "source_excerpt": {
-            "path": source_binding["source_path"],
-            "sha256": source_binding["source_sha256"],
-            "function": "uh_path_lookup",
-            "line": line_number,
-            "statement": statement,
-        },
-        "additional_source_refs": [
-            {"path": _relative_if_contained(context.root, main), "sha256": _sha256_file(main), "kind": "source_review"},
-            {"path": _relative_if_contained(context.root, client), "sha256": _sha256_file(client), "kind": "source_review"},
-        ],
-        "object_layout": {
-            "object_identity": "static char path_phys[PATH_MAX]",
-            "capacity_expression": "PATH_MAX",
-            "write_offset_expression": "PATH_MAX" if second else "PATH_MAX-1 and PATH_MAX (two-byte exact STORE)",
-            "write_width_bytes": int(context.binding.get("width_bytes") or 0),
-            "violating_relation": "strlen(path_phys) == PATH_MAX - 1; pathptr[1] or incremented *pathptr addresses offset PATH_MAX",
-        },
-        "entry_proof": {
-            "entry": "client_header_complete -> uh_handle_request -> __handle_file_request -> uh_path_lookup",
-            "controlled_value": "remote HTTP URL selects an existing canonical directory path and its trailing-slash branch",
-            "precondition": "an existing canonical directory path of PATH_MAX-1 bytes; the second STORE additionally uses a slash-terminated request and the nonempty default index list",
-        },
-        "claims": {
-            "exact_operation": True,
-            "source_or_binary_binding": True,
-            "exact_store": True,
-            "object_identity": True,
-            "capacity": True,
-            "offset_relation": True,
-            "feasible_out_of_bounds": True,
-            "real_entry_reachability": True,
-            "attacker_or_boundary_control": True,
-        },
-    }
-
-
-def _derive_c_remote_calloc_bug(context: CampaignContext) -> dict[str, Any]:
-    if str(context.state.get("vulnerability_type") or "") != "null_pointer_dereference":
-        raise RuleNotApplicable("candidate is not a null-dereference candidate")
-    source = _exact_source_context(context)
-    frame = source["frame"]
-    line_number = int(frame["line"])
-    statement = source["lines"][line_number - 1].strip()
-    if str(frame.get("function") or "") != "uh_defer_script" or statement != "dr->path = true;":
-        raise RuleNotApplicable("exact source is not the unchecked remote deferred-request allocation")
-    source_text = "\n".join(source["lines"])
-    required = (
-        "dr = calloc_a(sizeof(*dr), &_url, strlen(url) + 1, path_info_fields NULL);",
-        "if (n_requests >= conf.max_script_requests)",
-        "return uh_defer_script(cl, d, url, pi);",
-        "void uh_handle_request(struct client *cl)",
-    )
-    if not all(item in source_text for item in required):
-        raise RuleNotApplicable("remote deferred allocation entry topology changed")
-    dependency = _libubox_calloc_contract(context, _mapping(source.get("mapping")))
-    client = _contained_file(context.root, Path(source["source_root"]) / "client.c", "uhttpd client source")
-    if "uh_handle_request(cl);" not in client.read_text(encoding="utf-8"):
-        raise RuleNotApplicable("HTTP callback no longer reaches uh_handle_request")
-    source_binding = _source_binding(
-        context, source, source_function="uh_defer_script", source_lines=[line_number]
-    )
-    return {
-        "rule_claim": "pinned calloc_a can return NULL before assigning dr or auxiliary outputs, and the remotely reached path dereferences dr without a check",
-        "operation_address": str(context.binding.get("address") or ""),
-        "source_binding": source_binding,
-        "source_excerpt": {
-            "path": source_binding["source_path"],
-            "sha256": source_binding["source_sha256"],
-            "function": "uh_defer_script",
-            "line": line_number,
-            "statement": statement,
-        },
-        "additional_source_refs": [
-            dependency["package_makefile"],
-            dependency["source_archive"],
-            {"path": _relative_if_contained(context.root, client), "sha256": _sha256_file(client), "kind": "source_review"},
-        ],
-        "dependency_contract": dependency,
-        "entry_proof": {
-            "entry": "client_header_complete -> uh_handle_request -> __handle_file_request -> uh_invoke_handler -> uh_defer_script",
-            "controlled_value": "a remote request supplies url and selects the deferred script path once the configured active-script limit is reached",
-            "violating_path": "calloc_a allocation failure returns NULL; execution immediately reaches dr->path",
-        },
-        "claims": {
-            "exact_operation": True,
-            "source_or_binary_binding": True,
-            "exact_zero_capable_access": True,
-            "zero_address_feasible": True,
-            "real_entry_reachability": True,
-            "attacker_or_boundary_control": True,
-        },
-    }
-
-
 def _unique_source_array_definition(
     source: Mapping[str, Any],
     name: str,
@@ -4503,6 +4392,19 @@ def _check_tool_references(root: Path, certificate: Mapping[str, Any]) -> None:
             raise CertificateError(f"certificate {label} tool changed")
     if _sha256_file(Path(__file__).resolve()) != str(checker.get("sha256") or ""):
         raise CertificateError("running checker differs from the certificate checker")
+    if str(certificate.get("rule_id") or "") == SEMANTIC_INVESTIGATION_RULE:
+        from binary_agent import adjudication_investigation, adjudication_verifier
+
+        for label, live in (
+            ("investigation", Path(adjudication_investigation.__file__).resolve()),
+            ("verifier", Path(adjudication_verifier.__file__).resolve()),
+        ):
+            reference = _mapping(tools.get(label))
+            path = _contained_file(root, str(reference.get("path") or ""), label)
+            if _sha256_file(path) != str(reference.get("sha256") or ""):
+                raise CertificateError(f"certificate {label} tool changed")
+            if _sha256_file(live) != str(reference.get("sha256") or ""):
+                raise CertificateError(f"running {label} differs from the certificate")
 
 
 def _check_binding_reference(context: CampaignContext, certificate: Mapping[str, Any]) -> None:

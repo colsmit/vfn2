@@ -28,6 +28,7 @@ from binary_agent.adjudication_certificates import (
     _mapping,
     _mapping_rows,
     _relative_if_contained,
+    _source_binding,
     load_campaign_context,
 )
 
@@ -194,6 +195,256 @@ class InvestigationPackResult:
     candidate_id: str
 
 
+@dataclass(frozen=True)
+class InvestigationStageResult:
+    summary_path: Path
+    verified: Mapping[str, Mapping[str, Any]]
+    residual_candidate_ids: Sequence[str]
+    direct_attempt_count: int
+    agent_attempt_count: int
+    nearby_defect_count: int
+    root_cause_group_count: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "summary_path": str(self.summary_path),
+            "verified_candidate_count": len(self.verified),
+            "residual_candidate_count": len(self.residual_candidate_ids),
+            "direct_attempt_count": self.direct_attempt_count,
+            "agent_attempt_count": self.agent_attempt_count,
+            "nearby_defect_count": self.nearby_defect_count,
+            "root_cause_group_count": self.root_cause_group_count,
+        }
+
+
+def run_investigation_stage(
+    campaign_root: Path,
+    *,
+    direct_provider: InvestigationProvider | None,
+    agent_provider: InvestigationProvider | None,
+    output_dir: Path,
+    candidate_ids: Sequence[str] | None = None,
+    direct_call_cap: int | None = None,
+    agent_call_cap: int | None = None,
+) -> InvestigationStageResult:
+    """Run deterministic verification, then bounded direct and agent tiers."""
+
+    from binary_agent.adjudication_verifier import (
+        VerifiedInvestigation,
+        group_verified_investigations,
+        verify_investigation_proposal,
+    )
+
+    root = Path(campaign_root).resolve()
+    stage_root = Path(output_dir).resolve()
+    try:
+        stage_root.relative_to(root)
+    except ValueError as exc:
+        raise InvestigationError("investigation output must stay below the campaign root") from exc
+    manifest = _load_json(root / "frozen_manifest.json")
+    frozen_ids = {
+        str(row.get("candidate_id") or "")
+        for row in _mapping_rows(manifest.get("candidates"))
+    }
+    selected = sorted(set(candidate_ids) if candidate_ids is not None else frozen_ids)
+    unknown = sorted(set(selected) - frozen_ids)
+    if unknown:
+        raise InvestigationError(f"unknown investigation candidates: {unknown}")
+    if direct_call_cap is not None and direct_call_cap < 0:
+        raise InvestigationError("direct call cap must be nonnegative")
+    if agent_call_cap is not None and agent_call_cap < 0:
+        raise InvestigationError("agent call cap must be nonnegative")
+
+    verified: dict[str, Mapping[str, Any]] = {}
+    verified_objects: list[VerifiedInvestigation] = []
+    attempts: list[Mapping[str, Any]] = []
+    residual: list[str] = []
+    direct_calls = 0
+    agent_calls = 0
+    for candidate_id in selected:
+        try:
+            pack_path = build_investigation_pack(root, candidate_id, stage_root / "packs")
+            pack = check_investigation_pack(root, pack_path)
+        except (CertificateError, RuleNotApplicable, InvestigationError, OSError) as exc:
+            attempts.append(
+                {
+                    "candidate_id": candidate_id,
+                    "tier": "prepare",
+                    "status": "error",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+            )
+            residual.append(candidate_id)
+            continue
+        deterministic = _deterministic_semantic_proposal(root, pack)
+        proposal_paths: list[Path] = []
+        if deterministic is not None:
+            proposal_path = stage_root / "proposals" / "deterministic" / f"{_safe_stem(candidate_id)}.json"
+            _write_exact_json(proposal_path, deterministic)
+            proposal_paths.append(proposal_path)
+
+        result: VerifiedInvestigation | None = None
+        for proposal_path in proposal_paths:
+            checked = verify_investigation_proposal(root, pack_path, proposal_path)
+            if checked.verified:
+                result = checked
+                break
+        if result is None and direct_provider is not None and (
+            direct_call_cap is None or direct_calls < direct_call_cap
+        ):
+            direct_calls += 1
+            attempt = run_provider_attempt(
+                root,
+                pack_path,
+                direct_provider,
+                tier="direct",
+                output_dir=stage_root / "attempts",
+            )
+            attempts.append(attempt.to_dict())
+            if attempt.status == "proposed":
+                checked = verify_investigation_proposal(
+                    root, pack_path, root / attempt.proposal_path
+                )
+                if checked.verified:
+                    result = checked
+        if result is None and agent_provider is not None and (
+            agent_call_cap is None or agent_calls < agent_call_cap
+        ):
+            agent_calls += 1
+            attempt = run_provider_attempt(
+                root,
+                pack_path,
+                agent_provider,
+                tier="agent",
+                output_dir=stage_root / "attempts",
+            )
+            attempts.append(attempt.to_dict())
+            if attempt.status == "proposed":
+                checked = verify_investigation_proposal(
+                    root, pack_path, root / attempt.proposal_path
+                )
+                if checked.verified:
+                    result = checked
+        if result is None:
+            residual.append(candidate_id)
+            continue
+        verified_path = stage_root / "verified" / f"{_safe_stem(candidate_id)}.json"
+        _write_exact_json(verified_path, result.to_dict())
+        proposal_path = _proposal_path_for_verified(stage_root, candidate_id, attempts)
+        verified[candidate_id] = {
+            "pack_path": str(pack_path.relative_to(root)),
+            "pack_sha256": sha256_file(pack_path),
+            "proposal_path": str(proposal_path.relative_to(root)),
+            "proposal_sha256": sha256_file(proposal_path),
+            "verified_path": str(verified_path.relative_to(root)),
+            "verified_sha256": sha256_file(verified_path),
+            "decision": result.decision,
+            "basis": result.basis,
+            "claim_kind": result.claim_kind,
+        }
+        verified_objects.append(result)
+
+    groups = group_verified_investigations(verified_objects)
+    group_path = stage_root / "root_cause_groups.json"
+    _write_exact_json(group_path, groups)
+    nearby_count = sum(len(item.nearby_defects) for item in verified_objects)
+    summary = {
+        "schema_version": SCHEMA_VERSION,
+        "artifact_kind": "binary_adjudication_investigation_stage_summary",
+        "frozen_manifest_sha256": sha256_file(root / "frozen_manifest.json"),
+        "candidate_count": len(selected),
+        "verified_candidate_count": len(verified),
+        "residual_candidate_count": len(residual),
+        "direct_attempt_count": direct_calls,
+        "agent_attempt_count": agent_calls,
+        "nearby_defect_count": nearby_count,
+        "root_cause_group_count": len(groups["groups"]),
+        "verified": [
+            {"candidate_id": candidate_id, **verified[candidate_id]}
+            for candidate_id in sorted(verified)
+        ],
+        "residual_candidate_ids": residual,
+        "attempts": attempts,
+        "root_cause_groups": {
+            "path": str(group_path.relative_to(root)),
+            "sha256": sha256_file(group_path),
+        },
+    }
+    summary_path = stage_root / "summary.json"
+    _write_exact_json(summary_path, summary)
+    return InvestigationStageResult(
+        summary_path=summary_path,
+        verified=verified,
+        residual_candidate_ids=tuple(residual),
+        direct_attempt_count=direct_calls,
+        agent_attempt_count=agent_calls,
+        nearby_defect_count=nearby_count,
+        root_cause_group_count=len(groups["groups"]),
+    )
+
+
+def _deterministic_semantic_proposal(
+    root: Path,
+    pack: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    from binary_agent.adjudication_verifier import verify_null_path, verify_spatial_path
+
+    vulnerability_type = str(pack.get("vulnerability_type") or "")
+    empty = {"claims": {}}
+    if vulnerability_type in {"stack_overflow", "out_of_bounds_write"}:
+        claim_kind = "spatial_path"
+        derived = verify_spatial_path(root, pack, empty)
+    elif vulnerability_type == "null_pointer_dereference":
+        claim_kind = "null_path"
+        derived = verify_null_path(root, pack, empty)
+    else:
+        return None
+    if not derived.verified:
+        return None
+    operation = _mapping(pack.get("exact_operation"))
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "artifact_kind": PROPOSAL_KIND,
+        "candidate_id": str(pack.get("candidate_id") or ""),
+        "proposed_decision": derived.decision,
+        "claim_kind": claim_kind,
+        "exact_operation": {
+            "address": str(operation.get("address") or ""),
+            "pcode": str(operation.get("pcode") or ""),
+        },
+        "path_steps": [],
+        "claims": {},
+        "root_cause": {},
+        "nearby_defects": [],
+        "generation": {"tier": "deterministic", "model_calls": 0},
+    }
+
+
+def _proposal_path_for_verified(
+    stage_root: Path,
+    candidate_id: str,
+    attempts: Sequence[Mapping[str, Any]],
+) -> Path:
+    deterministic = stage_root / "proposals" / "deterministic" / f"{_safe_stem(candidate_id)}.json"
+    if deterministic.is_file():
+        return deterministic
+    matching = [
+        Path(str(item.get("proposal_path") or ""))
+        for item in attempts
+        if str(item.get("candidate_id") or "") == candidate_id
+        and str(item.get("status") or "") == "proposed"
+    ]
+    if not matching:
+        raise InvestigationError("verified investigation has no proposal artifact")
+    # Provider attempt paths are campaign-relative.  The caller has already
+    # verified them; recover the campaign root from the stage's parent chain.
+    campaign_root = next(
+        parent for parent in stage_root.parents if (parent / "frozen_manifest.json").is_file()
+    )
+    return campaign_root / matching[-1]
+
+
 def build_investigation_pack(
     campaign_root: Path,
     candidate_id: str,
@@ -258,6 +509,12 @@ def build_investigation_pack(
             "operation_line_in_function": operation_line_in_function,
             "function_sha256": function_sha256,
             "function_text": function_text,
+            "binding": _source_binding(
+                context,
+                source,
+                source_function=function_name,
+                source_lines=[line_number],
+            ),
         },
         "source_tree": source_tree,
         "binary_context": {

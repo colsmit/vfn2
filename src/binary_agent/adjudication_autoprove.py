@@ -14,6 +14,12 @@ from typing import Any, Mapping
 
 from binary_agent.adjudication import AdjudicationError, admit_review
 from binary_agent import adjudication_certificates as checker_module
+from binary_agent import adjudication_investigation as investigation_module
+from binary_agent import adjudication_verifier as verifier_module
+from binary_agent.adjudication_investigation import (
+    InvestigationProvider,
+    run_investigation_stage,
+)
 from binary_agent.adjudication_certificates import (
     C_DECLARATION_INIT_RULE,
     C_CHECKED_API_OUTPUT_RULE,
@@ -45,8 +51,6 @@ from binary_agent.adjudication_certificates import (
     C_TRUSTED_ALLOC_RULE,
     C_CLIENT_CONTEXT_RULE,
     LIBUBOX_BLOBMSG_VALUE_RULE,
-    C_PATH_APPEND_BUG_RULE,
-    C_REMOTE_CALLOC_BUG_RULE,
     C_GUARDED_POINTER_RULE,
     C_IMMEDIATE_ASSIGNMENT_RULE,
     C_INPLACE_RULE,
@@ -63,6 +67,7 @@ from binary_agent.adjudication_certificates import (
     REGISTERED_RULES,
     RULE_BASES,
     RULE_DECISIONS,
+    SEMANTIC_INVESTIGATION_RULE,
     X86_CALL_RULE,
     X86_PCODE_CALL_RULE,
     CertificateError,
@@ -97,7 +102,15 @@ class AutoproveResult:
         }
 
 
-def run_autoprove(campaign_root: Path, *, admit: bool = False) -> AutoproveResult:
+def run_autoprove(
+    campaign_root: Path,
+    *,
+    admit: bool = False,
+    direct_provider: InvestigationProvider | None = None,
+    agent_provider: InvestigationProvider | None = None,
+    direct_call_cap: int | None = None,
+    agent_call_cap: int | None = None,
+) -> AutoproveResult:
     """Run every registered rule and admit only completely certified units."""
 
     root = Path(campaign_root).resolve()
@@ -105,9 +118,7 @@ def run_autoprove(campaign_root: Path, *, admit: bool = False) -> AutoproveResul
     manifest = _load_json(manifest_path)
     autoprove_root = root / "autoprove"
     tool_refs = _freeze_tools(root, autoprove_root)
-    run_id = hashlib.sha256(
-        (tool_refs["generator"]["sha256"] + tool_refs["checker"]["sha256"]).encode("ascii")
-    ).hexdigest()[:16]
+    run_id = _tool_run_id(tool_refs)
     run_root = autoprove_root / "runs" / run_id
     certificates: dict[str, dict[str, str]] = {}
     proofs: dict[str, Mapping[str, Any]] = {}
@@ -185,6 +196,84 @@ def run_autoprove(campaign_root: Path, *, admit: bool = False) -> AutoproveResul
         proofs[candidate_id] = proof
         rule_counts[selected_rule] += 1
 
+    investigation_summary: Mapping[str, Any] = {}
+    residual_ids = [str(row.get("candidate_id") or "") for row in residual_rows]
+    if residual_ids:
+        stage = run_investigation_stage(
+            root,
+            direct_provider=direct_provider,
+            agent_provider=agent_provider,
+            output_dir=run_root / "investigation",
+            candidate_ids=residual_ids,
+            direct_call_cap=direct_call_cap,
+            agent_call_cap=agent_call_cap,
+        )
+        investigation_summary = {
+            **stage.to_dict(),
+            "summary_path": str(stage.summary_path.relative_to(root)),
+            "summary_sha256": _sha256_file(stage.summary_path),
+        }
+        for candidate_id, reference in stage.verified.items():
+            context = load_campaign_context(root, candidate_id)
+            verified_path = root / str(reference.get("verified_path") or "")
+            verified_payload = _load_json(verified_path)
+            proof = _mapping(verified_payload.get("proof"))
+            binding_path = root / "bindings" / f"{candidate_id}.json"
+            certificate = {
+                "schema_version": SCHEMA_VERSION,
+                "artifact_kind": CERTIFICATE_KIND,
+                "candidate_id": candidate_id,
+                "binary": str(context.candidate.get("binary") or ""),
+                "vulnerability_type": str(context.candidate.get("vulnerability_type") or ""),
+                "decision": str(reference.get("decision") or ""),
+                "basis": str(reference.get("basis") or ""),
+                "rule_id": SEMANTIC_INVESTIGATION_RULE,
+                "frozen_manifest": {
+                    "path": "frozen_manifest.json",
+                    "sha256": _sha256_file(manifest_path),
+                },
+                "prepared_binding": {
+                    "path": str(binding_path.relative_to(root)),
+                    "sha256": _sha256_file(binding_path),
+                    "address": str(context.binding.get("address") or ""),
+                    "pcode": str(context.binding.get("pcode") or ""),
+                },
+                "tools": tool_refs,
+                "investigation": {
+                    "pack": {
+                        "path": str(reference.get("pack_path") or ""),
+                        "sha256": str(reference.get("pack_sha256") or ""),
+                    },
+                    "proposal": {
+                        "path": str(reference.get("proposal_path") or ""),
+                        "sha256": str(reference.get("proposal_sha256") or ""),
+                    },
+                    "verified": {
+                        "path": str(reference.get("verified_path") or ""),
+                        "sha256": str(reference.get("verified_sha256") or ""),
+                    },
+                },
+                "proof": proof,
+            }
+            certificate_path = run_root / "certificates" / f"{candidate_id}.json"
+            _write_exact_json(certificate_path, certificate)
+            check_certificate(root, certificate_path)
+            certificate_hash = _sha256_file(certificate_path)
+            certificates[candidate_id] = {
+                "path": str(certificate_path.relative_to(root)),
+                "sha256": certificate_hash,
+                "kind": "source_review",
+                "rule_id": SEMANTIC_INVESTIGATION_RULE,
+            }
+            proofs[candidate_id] = proof
+            rule_counts[SEMANTIC_INVESTIGATION_RULE] += 1
+        unresolved = set(stage.residual_candidate_ids)
+        residual_rows = [
+            {**row, "investigation_status": "residual"}
+            for row in residual_rows
+            if str(row.get("candidate_id") or "") in unresolved
+        ]
+
     residual_queue = {
         "schema_version": SCHEMA_VERSION,
         "artifact_kind": AUTOPROVE_KIND + "_residual_queue",
@@ -194,6 +283,7 @@ def run_autoprove(campaign_root: Path, *, admit: bool = False) -> AutoproveResul
         "proven_count": len(certificates),
         "residual_count": len(residual_rows),
         "residual_candidates": residual_rows,
+        "investigation": investigation_summary,
     }
     residual_path = run_root / "residual_queue.json"
     _atomic_json(residual_path, residual_queue)
@@ -274,6 +364,7 @@ def run_autoprove(campaign_root: Path, *, admit: bool = False) -> AutoproveResul
             "path": str(residual_path.relative_to(root)),
             "sha256": _sha256_file(residual_path),
         },
+        "investigation": investigation_summary,
     }
     summary_path = autoprove_root / "summary.json"
     _atomic_json(summary_path, summary)
@@ -312,10 +403,7 @@ def check_all_certificates(campaign_root: Path) -> dict[str, Any]:
 
     tools = _mapping(summary.get("tools"))
     tool_hashes: dict[str, str] = {}
-    for label, live_path in (
-        ("generator", Path(__file__).resolve()),
-        ("checker", Path(checker_module.__file__).resolve()),
-    ):
+    for label, live_path in _live_tool_paths().items():
         reference = _mapping(tools.get(label))
         frozen_tool = _contained_file(
             root,
@@ -328,9 +416,9 @@ def check_all_certificates(campaign_root: Path) -> dict[str, Any]:
         if _sha256_file(live_path) != expected_hash:
             raise CertificateError(f"running {label} differs from the autoprove summary")
         tool_hashes[label] = expected_hash
-    expected_run_id = hashlib.sha256(
-        (tool_hashes["generator"] + tool_hashes["checker"]).encode("ascii")
-    ).hexdigest()[:16]
+    expected_run_id = _tool_run_id(
+        {label: {"sha256": digest} for label, digest in tool_hashes.items()}
+    )
     if str(summary.get("run_id") or "") != expected_run_id:
         raise CertificateError("autoprove summary run ID does not match its tools")
 
@@ -436,8 +524,13 @@ def _decision_for_certificate(
         if satisfied is True
     }
     rule_id = str(certificate_ref.get("rule_id") or "")
-    basis = RULE_BASES.get(rule_id)
-    if basis is None:
+    certificate = _load_json(root / str(certificate_ref.get("path") or ""))
+    basis = (
+        str(certificate.get("basis") or "")
+        if rule_id == SEMANTIC_INVESTIGATION_RULE
+        else RULE_BASES.get(rule_id)
+    )
+    if not basis:
         raise CertificateError(f"no registered basis for rule {rule_id!r}")
     evidence_refs: list[dict[str, str]] = [binding_ref, dict(certificate_ref)]
     source_binding: Mapping[str, Any] | None = None
@@ -447,6 +540,27 @@ def _decision_for_certificate(
         "exact_source_feasible_violation",
     }:
         source_binding = _mapping(proof.get("source_binding"))
+        if rule_id == SEMANTIC_INVESTIGATION_RULE:
+            investigation = _mapping(certificate.get("investigation"))
+            pack_ref = _mapping(investigation.get("pack"))
+            proposal_ref = _mapping(investigation.get("proposal"))
+            verified_ref = _mapping(investigation.get("verified"))
+            pack = _load_json(root / str(pack_ref.get("path") or ""))
+            source_binding = _mapping(_mapping(pack.get("source_context")).get("binding"))
+            for kind, reference in (
+                ("investigation_pack", pack_ref),
+                ("untrusted_investigation_proposal", proposal_ref),
+                ("verified_semantic_investigation", verified_ref),
+            ):
+                evidence_refs.append(
+                    {
+                        "path": str(reference.get("path") or ""),
+                        "sha256": str(reference.get("sha256") or ""),
+                        "kind": kind,
+                    }
+                )
+            verified_payload = _load_json(root / str(verified_ref.get("path") or ""))
+            evidence_refs.extend(_mapping_rows(verified_payload.get("evidence_refs")))
         source_path = root / str(source_binding.get("source_path") or "")
         source_ref = {
             "path": str(source_binding.get("source_path") or ""),
@@ -466,7 +580,14 @@ def _decision_for_certificate(
             if additional_ref["sha256"] != str(additional.get("sha256") or ""):
                 raise CertificateError("additional source proof hash changed")
             evidence_refs.append(additional_ref)
-    if rule_id == X86_CALL_RULE:
+    if rule_id == SEMANTIC_INVESTIGATION_RULE:
+        claim = str(proof.get("rule_claim") or "the exact operation satisfies the checked semantic relation")
+        rationale = (
+            "A deterministic semantic verifier re-derived the exact source and binary path: "
+            + claim.rstrip(".")
+            + ". Provider output is retained only as an untrusted proposal."
+        )
+    elif rule_id == X86_CALL_RULE:
         rationale = (
             "Frozen machine bytes decode as an x86 CALL whose architectural push stores "
             "the exact successor in a newly reserved eight-byte return slot; the alleged "
@@ -689,21 +810,15 @@ def _decision_for_certificate(
             "The exact LOAD consumes blobmsg_data from a parser-initialized and explicitly "
             "guarded table slot, not the alleged uninitialized source local."
         )
-    elif rule_id == C_PATH_APPEND_BUG_RULE:
-        rationale = (
-            "For a remotely selected canonical directory of PATH_MAX-1 bytes, appending a "
-            "slash advances the pointer to offset PATH_MAX and the exact STORE writes out of bounds."
-        )
-    elif rule_id == C_REMOTE_CALLOC_BUG_RULE:
-        rationale = (
-            "Pinned calloc_a can return NULL before assigning dr, while a remote HTTP request "
-            "can reach the exact unchecked dereference on the deferred-script path."
-        )
     else:
         raise CertificateError(f"no decision rendering for rule {rule_id!r}")
     decision = {
         "candidate_id": candidate_id,
-        "decision": RULE_DECISIONS[rule_id],
+        "decision": (
+            str(certificate.get("decision") or "")
+            if rule_id == SEMANTIC_INVESTIGATION_RULE
+            else RULE_DECISIONS[rule_id]
+        ),
         "basis": basis,
         "rationale": rationale,
         "binary_operation": binding,
@@ -719,10 +834,7 @@ def _decision_for_certificate(
 
 
 def _freeze_tools(root: Path, autoprove_root: Path) -> dict[str, dict[str, str]]:
-    sources = {
-        "generator": Path(__file__).resolve(),
-        "checker": Path(checker_module.__file__).resolve(),
-    }
+    sources = _live_tool_paths()
     result: dict[str, dict[str, str]] = {}
     for label, source in sources.items():
         digest = _sha256_file(source)
@@ -740,6 +852,23 @@ def _freeze_tools(root: Path, autoprove_root: Path) -> dict[str, dict[str, str]]
             "sha256": digest,
         }
     return result
+
+
+def _live_tool_paths() -> dict[str, Path]:
+    return {
+        "generator": Path(__file__).resolve(),
+        "checker": Path(checker_module.__file__).resolve(),
+        "investigation": Path(investigation_module.__file__).resolve(),
+        "verifier": Path(verifier_module.__file__).resolve(),
+    }
+
+
+def _tool_run_id(tool_refs: Mapping[str, Mapping[str, str]]) -> str:
+    payload = "".join(
+        f"{label}:{str(_mapping(reference).get('sha256') or '')};"
+        for label, reference in sorted(tool_refs.items())
+    )
+    return hashlib.sha256(payload.encode("ascii")).hexdigest()[:16]
 
 
 def _unit_id_for_candidate(manifest: Mapping[str, Any], candidate_id: str) -> str:

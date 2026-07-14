@@ -19,10 +19,11 @@ The main demonstration is a clean rerun of the frozen 218-candidate OpenWrt camp
 - [x] (2026-07-14 16:04Z) Implemented the direct OpenAI-compatible provider script, immutable source-tree inventory, provider cost/provenance capture, and provider-neutral external-command adapter. Tiered campaign orchestration and call caps remain part of the integration milestone below.
 - [x] (2026-07-14 16:34Z) Implemented general null verification with earliest-fault rejection. The frozen downstream allocation candidate is deterministically `not_bug` because `memcpy` faults first, while the unchecked allocation is retained as a nearby defect.
 - [x] (2026-07-14 17:02Z) Implemented source callback/table call-graph reachability, exact array capacity recovery from source or symbol-rich binary symbols, `realpath` maximum-length dataflow, STORE-width/offset proof, downstream signed-promotion/list-initialization/layout proof, and causal root hashing. The untouched OpenWrt evidence now yields two verified bug rows with the same root-cause ID.
-- [ ] Finish general deterministic validators by adding campaign-level group validation and generic certificate rechecking around the null/spatial results.
-- [ ] Integrate verified investigation certificates with autoprove, review admission, and finalization; remove the two source-specific OpenWrt bug rules.
-- [ ] Add adversarial tests and holdout examples.
-- [ ] Rerun all 218 OpenWrt candidates unattended from a clean prepared campaign and verify the corrected result.
+- [x] (2026-07-14 17:18Z) Added campaign-level root grouping and a generic semantic-investigation certificate. Certificate checking reloads the hashed pack and proposal, reruns the semantic verifier, and compares the complete verified payload; provider prose cannot alter a checked proof.
+- [x] (2026-07-14 17:24Z) Integrated deterministic/direct/agent investigation tiers with autoprove and review rendering, added CLI provider commands/timeouts/call caps, and deleted both source-specific OpenWrt positive rules and their exact-line test.
+- [x] (2026-07-14 17:29Z) Ran the existing frozen campaign unattended under tool run `59597ef9ac95293a`: 218 certificates, zero residuals, two semantic bug rows, one semantic `not_bug` row, one root group, one nearby allocation defect, and no model calls. An independent check re-derived all 218 certificates.
+- [ ] Finish adversarial tests and holdout examples (completed: renamed/shifted spatial pair, guarded spatial variant, first/later null dereferences, proposal tamper, provider escalation; remaining: clean copied-campaign acceptance and any regressions exposed by the full suite).
+- [ ] Rerun all 218 OpenWrt candidates unattended from a clean prepared campaign twice and verify identical corrected results.
 - [ ] Run the full repository verification commands and publish the completed milestone.
 
 ## Surprises & Discoveries
