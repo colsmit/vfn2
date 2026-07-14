@@ -8,6 +8,7 @@ import pytest
 
 from binary_agent import adjudication as adjudication_module
 from binary_agent import adjudication_certificates as checker_module
+from binary_agent import adjudication_investigation as investigation_module
 from binary_agent.adjudication import sha256_file
 from binary_agent.adjudication_autoprove import run_autoprove
 from binary_agent.adjudication_investigation import (
@@ -708,6 +709,40 @@ def test_investigation_stage_escalates_unverified_direct_proposal_to_agent(
     assert result.agent_attempt_count == 1
     assert result.residual_candidate_ids == (candidate_id,)
     assert result.verified == {}
+
+
+def test_investigation_stage_isolates_deterministic_verifier_ambiguity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, _source, candidate_id = _source_bound_campaign(tmp_path, monkeypatch)
+
+    def reject_ambiguous(_root: Path, _pack: dict) -> None:
+        raise VerificationError("exact source line maps to 2 statements instead of one")
+
+    monkeypatch.setattr(
+        investigation_module,
+        "_deterministic_semantic_proposal",
+        reject_ambiguous,
+    )
+    result = run_investigation_stage(
+        root,
+        direct_provider=None,
+        agent_provider=None,
+        output_dir=root / "autonomous-stage",
+    )
+
+    assert result.residual_candidate_ids == (candidate_id,)
+    summary = json.loads(result.summary_path.read_text())
+    assert summary["attempts"] == [
+        {
+            "candidate_id": candidate_id,
+            "tier": "deterministic",
+            "status": "rejected",
+            "error_type": "VerificationError",
+            "error": "exact source line maps to 2 statements instead of one",
+        }
+    ]
 
 
 def test_autoprove_admits_cfg_infeasible_semantic_certificate(

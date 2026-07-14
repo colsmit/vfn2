@@ -53,6 +53,15 @@ UNINITIALIZED_TYPES = frozenset({"uninitialized_memory_use"})
 NULL_TYPES = frozenset({"null_pointer_dereference"})
 EFFECT_TYPES = frozenset({"argument_injection", "path_traversal"})
 LEAK_TYPES = frozenset({"memory_leak"})
+LIFETIME_TYPES = frozenset(
+    {
+        "use_after_free",
+        "double_free",
+        "mismatched_deallocator",
+        "double_close",
+        "use_after_close",
+    }
+)
 SOURCE_BASES = frozenset(
     {
         "exact_source_feasible_violation",
@@ -1243,6 +1252,25 @@ def _required_obligations(
             }
         elif basis == "source_proves_safety":
             alternatives.append({"ownership_transfer", "bounded_lifetime", "later_cleanup"})
+    elif vulnerability_type in LIFETIME_TYPES:
+        required.add("resource_lifetime_modeled")
+        if decision == "bug":
+            required |= {
+                "same_resource_generation",
+                "ordered_events",
+                "violation",
+                "real_entry_reachability",
+                "attacker_or_boundary_control",
+            }
+        elif basis == "source_proves_safety":
+            alternatives.append(
+                {
+                    "mutually_exclusive_paths",
+                    "different_resource_generation",
+                    "terminating_path",
+                    "ownership_cleanup",
+                }
+            )
     else:
         raise AdjudicationError(f"unsupported adjudication vulnerability type: {vulnerability_type!r}")
 

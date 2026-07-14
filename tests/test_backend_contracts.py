@@ -462,6 +462,84 @@ def test_program_index_normalizes_heap_object_and_assignment_alias() -> None:
     assert allocation.resource_identity == release.resource_identity == "0x1000:p"
 
 
+def test_program_index_does_not_merge_resources_through_reassigned_temporary() -> None:
+    text = """void main(void) {
+  void *heap;
+  long temporary;
+  heap = malloc(32);
+  temporary = (long)heap;
+  temporary = 3;
+  close(temporary);
+  free(heap);
+}"""
+    record = _record(name="main", address="0x1000", ordinal=0, relative_path="main.c", text=text)
+    node = FunctionNode(record, text, {}, None, 0)
+    index = build_program_index(_manifest(), (node,))
+
+    close_event = next(
+        item
+        for item in index.lifecycle_events
+        if item.event_kind == "release" and item.allocator_family == "descriptor"
+    )
+    free_event = next(
+        item
+        for item in index.lifecycle_events
+        if item.event_kind == "release" and item.allocator_family == "c_heap"
+    )
+    assert close_event.resource_identity == "0x1000:temporary"
+    assert free_event.resource_identity == "0x1000:heap"
+    assert close_event.resource_identity != free_event.resource_identity
+
+
+def test_lifetime_generation_ends_at_dominating_direct_reassignment(
+    tmp_path: Path,
+) -> None:
+    export_dir = _write_export(
+        tmp_path,
+        {
+            "main.c": """// Function: main
+// Address: 0x1000
+
+void main(int fd) {
+  close(fd);
+  fd = fresh_descriptor();
+  close(fd);
+}""",
+        },
+    )
+
+    assert discover_candidates_for_type(
+        export_dir,
+        "memory_lifetime",
+        "double_close",
+    ) == []
+
+
+def test_lifetime_optional_reassignment_does_not_hide_double_close(
+    tmp_path: Path,
+) -> None:
+    export_dir = _write_export(
+        tmp_path,
+        {
+            "main.c": """void main(int fd, int replace) {
+  close(fd);
+  if (replace) {
+    fd = fresh_descriptor();
+  }
+  close(fd);
+}""",
+        },
+    )
+
+    states = discover_candidates_for_type(
+        export_dir,
+        "memory_lifetime",
+        "double_close",
+    )
+    assert len(states) == 1
+    assert states[0].type_facts["same_resource"] is True
+
+
 def test_program_index_recovers_strict_allocator_wrapper_results() -> None:
     wrapper_text = "void *alloc(size_t size) { void *p; p = malloc(size); return p; }"
     main_text = "void main(void) { void *buffer; buffer = alloc(64); }"

@@ -21,6 +21,8 @@ from typing import Any, Mapping, Protocol, Sequence
 
 from binary_agent.adjudication import sha256_file
 from binary_agent.adjudication_certificates import (
+    CampaignContext,
+    CampaignContextIndex,
     CertificateError,
     RuleNotApplicable,
     _disassembly_window,
@@ -28,6 +30,7 @@ from binary_agent.adjudication_certificates import (
     _mapping,
     _mapping_rows,
     _relative_if_contained,
+    _read_source_text,
     _source_binding,
     load_campaign_context,
 )
@@ -226,10 +229,12 @@ def run_investigation_stage(
     candidate_ids: Sequence[str] | None = None,
     direct_call_cap: int | None = None,
     agent_call_cap: int | None = None,
+    _context_index: CampaignContextIndex | None = None,
 ) -> InvestigationStageResult:
     """Run deterministic verification, then bounded direct and agent tiers."""
 
     from binary_agent.adjudication_verifier import (
+        VerificationError,
         VerifiedInvestigation,
         group_verified_investigations,
         verify_investigation_proposal,
@@ -241,15 +246,19 @@ def run_investigation_stage(
         stage_root.relative_to(root)
     except ValueError as exc:
         raise InvestigationError("investigation output must stay below the campaign root") from exc
-    manifest = _load_json(root / "frozen_manifest.json")
+    context_index = _context_index or CampaignContextIndex.build(root)
+    if context_index.root != root:
+        raise InvestigationError("prevalidated context index belongs to another campaign")
+    manifest = context_index.manifest
     frozen_ids = {
         str(row.get("candidate_id") or "")
         for row in _mapping_rows(manifest.get("candidates"))
     }
-    selected = sorted(set(candidate_ids) if candidate_ids is not None else frozen_ids)
-    unknown = sorted(set(selected) - frozen_ids)
+    selected_ids = set(candidate_ids) if candidate_ids is not None else frozen_ids
+    unknown = sorted(selected_ids - frozen_ids)
     if unknown:
         raise InvestigationError(f"unknown investigation candidates: {unknown}")
+    selected = sorted(selected_ids, key=context_index.sort_key)
     if direct_call_cap is not None and direct_call_cap < 0:
         raise InvestigationError("direct call cap must be nonnegative")
     if agent_call_cap is not None and agent_call_cap < 0:
@@ -261,10 +270,39 @@ def run_investigation_stage(
     residual: list[str] = []
     direct_calls = 0
     agent_calls = 0
+    source_tree_cache: dict[Path, Mapping[str, Any]] = {}
+    mapped_binaries = {
+        str(item.get("binary") or "")
+        for item in _mapping_rows(manifest.get("reference_build_mappings"))
+    }
     for candidate_id in selected:
+        if context_index.binary_for_candidate(candidate_id) not in mapped_binaries:
+            attempts.append(
+                {
+                    "candidate_id": candidate_id,
+                    "tier": "prepare",
+                    "status": "error",
+                    "error_type": "InvestigationError",
+                    "error": "candidate has no frozen reference-build mapping",
+                }
+            )
+            residual.append(candidate_id)
+            continue
         try:
-            pack_path = build_investigation_pack(root, candidate_id, stage_root / "packs")
-            pack = check_investigation_pack(root, pack_path)
+            context = context_index.load(candidate_id)
+            pack_path = build_investigation_pack(
+                root,
+                candidate_id,
+                stage_root / "packs",
+                _context=context,
+                _source_tree_cache=source_tree_cache,
+            )
+            pack = check_investigation_pack(
+                root,
+                pack_path,
+                _context=context,
+                _source_tree_cache=source_tree_cache,
+            )
         except (CertificateError, RuleNotApplicable, InvestigationError, OSError) as exc:
             attempts.append(
                 {
@@ -277,7 +315,19 @@ def run_investigation_stage(
             )
             residual.append(candidate_id)
             continue
-        deterministic = _deterministic_semantic_proposal(root, pack)
+        try:
+            deterministic = _deterministic_semantic_proposal(root, pack)
+        except VerificationError as exc:
+            attempts.append(
+                {
+                    "candidate_id": candidate_id,
+                    "tier": "deterministic",
+                    "status": "rejected",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+            )
+            deterministic = None
         proposal_paths: list[Path] = []
         if deterministic is not None:
             proposal_path = stage_root / "proposals" / "deterministic" / f"{_safe_stem(candidate_id)}.json"
@@ -449,16 +499,23 @@ def build_investigation_pack(
     campaign_root: Path,
     candidate_id: str,
     output_dir: Path,
+    *,
+    _context: CampaignContext | None = None,
+    _source_tree_cache: dict[Path, Mapping[str, Any]] | None = None,
 ) -> Path:
     """Write a deterministic, label-free evidence pack for one frozen candidate."""
 
     root = Path(campaign_root).resolve()
-    context = load_campaign_context(root, candidate_id)
+    context = _context or load_campaign_context(root, candidate_id)
+    if context.root != root:
+        raise InvestigationError("prevalidated context belongs to another campaign")
+    if str(context.candidate.get("candidate_id") or "") != candidate_id:
+        raise InvestigationError("prevalidated context belongs to another candidate")
     binding_path = root / "bindings" / f"{candidate_id}.json"
     manifest_path = root / "frozen_manifest.json"
     source = _exact_source_context(context)
     source_path = Path(source["source_path"]).resolve()
-    source_text = source_path.read_text(encoding="utf-8")
+    source_text = _read_source_text(source_path)
     frame = _mapping(source.get("frame"))
     function_name = str(frame.get("function") or context.binding.get("function_name") or "")
     line_number = int(frame.get("line") or 0)
@@ -487,7 +544,16 @@ def build_investigation_pack(
     mapping_payload = _load_json(mapping_path)
     source_mapping = _mapping(mapping_payload.get("source"))
     source_root = root / str(source_mapping.get("path") or "")
-    source_tree = _source_tree_inventory(root, source_root)
+    source_key = source_root.resolve()
+    source_tree = (
+        _source_tree_cache.get(source_key)
+        if _source_tree_cache is not None
+        else None
+    )
+    if source_tree is None:
+        source_tree = _source_tree_inventory(root, source_root)
+        if _source_tree_cache is not None:
+            _source_tree_cache[source_key] = source_tree
 
     pack = {
         "schema_version": SCHEMA_VERSION,
@@ -543,11 +609,31 @@ def build_investigation_pack(
         },
         "input_refs": [
             _file_ref(root, manifest_path, "frozen_manifest"),
-            _file_ref(root, state_path, "candidate_states_v2"),
-            _file_ref(root, binary_path, "frozen_binary"),
-            _file_ref(root, export_path, "ghidra_export_manifest"),
+            _file_ref(
+                root,
+                state_path,
+                "candidate_states_v2",
+                known_sha256=str(input_row.get("candidate_states_sha256") or ""),
+            ),
+            _file_ref(
+                root,
+                binary_path,
+                "frozen_binary",
+                known_sha256=str(input_row.get("binary_sha256") or ""),
+            ),
+            _file_ref(
+                root,
+                export_path,
+                "ghidra_export_manifest",
+                known_sha256=str(input_row.get("export_manifest_sha256") or ""),
+            ),
             _file_ref(root, binding_path, "exact_binary_operation"),
-            _file_ref(root, mapping_path, "reference_build_mapping"),
+            _file_ref(
+                root,
+                mapping_path,
+                "reference_build_mapping",
+                known_sha256=str(mapping_ref.get("sha256") or ""),
+            ),
             _file_ref(root, source_path, "exact_source"),
         ],
     }
@@ -556,7 +642,13 @@ def build_investigation_pack(
     return output
 
 
-def check_investigation_pack(campaign_root: Path, pack_path: Path) -> Mapping[str, Any]:
+def check_investigation_pack(
+    campaign_root: Path,
+    pack_path: Path,
+    *,
+    _context: CampaignContext | None = None,
+    _source_tree_cache: dict[Path, Mapping[str, Any]] | None = None,
+) -> Mapping[str, Any]:
     """Reload a pack and verify it is an exact derivation of frozen inputs."""
 
     root = Path(campaign_root).resolve()
@@ -568,7 +660,13 @@ def check_investigation_pack(campaign_root: Path, pack_path: Path) -> Mapping[st
         raise InvestigationError("artifact is not an investigation pack")
     candidate_id = str(pack.get("candidate_id") or "")
     with tempfile.TemporaryDirectory(prefix="adjudication_pack_check_") as raw:
-        expected_path = build_investigation_pack(root, candidate_id, Path(raw))
+        expected_path = build_investigation_pack(
+            root,
+            candidate_id,
+            Path(raw),
+            _context=_context,
+            _source_tree_cache=_source_tree_cache,
+        )
         expected = expected_path.read_bytes()
     if path.read_bytes() != expected:
         raise InvestigationError("investigation pack differs from frozen evidence derivation")
@@ -829,7 +927,13 @@ def _proof_contract(vulnerability_type: str) -> Mapping[str, Any]:
     }
 
 
-def _file_ref(root: Path, path: Path, kind: str) -> Mapping[str, str]:
+def _file_ref(
+    root: Path,
+    path: Path,
+    kind: str,
+    *,
+    known_sha256: str = "",
+) -> Mapping[str, str]:
     resolved = path.resolve()
     try:
         resolved.relative_to(root)
@@ -839,7 +943,7 @@ def _file_ref(root: Path, path: Path, kind: str) -> Mapping[str, str]:
         raise InvestigationError(f"evidence file is missing: {path}")
     return {
         "path": str(resolved.relative_to(root)),
-        "sha256": sha256_file(resolved),
+        "sha256": known_sha256 or sha256_file(resolved),
         "kind": kind,
     }
 

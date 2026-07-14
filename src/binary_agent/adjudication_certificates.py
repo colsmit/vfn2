@@ -14,7 +14,7 @@ import re
 import struct
 import subprocess
 import tarfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -65,6 +65,7 @@ LIBUBOX_JSON_ABORT_RULE = "libubox_json_script_abort_member_v1"
 C_TRUSTED_ALLOC_RULE = "c_bounded_trusted_allocation_v1"
 C_CLIENT_CONTEXT_RULE = "c_live_client_context_nonnull_v1"
 LIBUBOX_BLOBMSG_VALUE_RULE = "libubox_guarded_blobmsg_value_v1"
+C_PROCESS_SPLIT_LIFETIME_RULE = "c_process_split_lifetime_v1"
 SEMANTIC_INVESTIGATION_RULE = "semantic_investigation_v1"
 REGISTERED_RULES = (
     X86_CALL_RULE,
@@ -111,6 +112,7 @@ REGISTERED_RULES = (
     C_TRUSTED_ALLOC_RULE,
     C_CLIENT_CONTEXT_RULE,
     LIBUBOX_BLOBMSG_VALUE_RULE,
+    C_PROCESS_SPLIT_LIFETIME_RULE,
 )
 RULE_BASES = {
     X86_CALL_RULE: "verified_modeling_error",
@@ -157,6 +159,7 @@ RULE_BASES = {
     C_TRUSTED_ALLOC_RULE: "intentional_no_boundary",
     C_CLIENT_CONTEXT_RULE: "source_proves_safety",
     LIBUBOX_BLOBMSG_VALUE_RULE: "verified_modeling_error",
+    C_PROCESS_SPLIT_LIFETIME_RULE: "source_proves_safety",
 }
 RULE_DECISIONS = {
     rule_id: (
@@ -202,9 +205,175 @@ class CampaignContext:
     input_row: Mapping[str, Any]
     binary_path: Path
     export_manifest: Mapping[str, Any]
+    cache: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
+    shared_cache: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
 
-def check_certificate(campaign_root: Path, certificate_path: Path) -> dict[str, Any]:
+class CampaignContextIndex:
+    """Prevalidate and reuse immutable campaign inputs for one batch stage.
+
+    Normalized Ghidra exports can be hundreds of megabytes.  Loading one for
+    every candidate made an otherwise deterministic campaign take hours.  The
+    index validates every shared frozen input once, parses candidate states
+    once, and keeps at most one parsed export active.  Batch callers must group
+    work by binary; a new command constructs a fresh index and therefore
+    revalidates disk state independently.
+    """
+
+    def __init__(
+        self,
+        *,
+        root: Path,
+        manifest: Mapping[str, Any],
+        candidates: Mapping[str, Mapping[str, Any]],
+        inputs: Mapping[str, Mapping[str, Any]],
+        states: Mapping[str, Mapping[str, Mapping[str, Any]]],
+        binary_paths: Mapping[str, Path],
+        export_paths: Mapping[str, Path],
+    ) -> None:
+        self.root = root
+        self.manifest = manifest
+        self._candidates = candidates
+        self._inputs = inputs
+        self._states = states
+        self._binary_paths = binary_paths
+        self._export_paths = export_paths
+        self._active_export_binary = ""
+        self._active_export: Mapping[str, Any] | None = None
+        self._shared_caches: dict[str, dict[str, Any]] = {}
+
+    @classmethod
+    def build(cls, campaign_root: Path) -> "CampaignContextIndex":
+        root = Path(campaign_root).resolve()
+        manifest_path = root / "frozen_manifest.json"
+        manifest = _load_json(manifest_path)
+
+        candidate_rows = _mapping_rows(manifest.get("candidates"))
+        candidates = {
+            str(item.get("candidate_id") or ""): item
+            for item in candidate_rows
+            if str(item.get("candidate_id") or "")
+        }
+        if len(candidates) != len(candidate_rows):
+            raise CertificateError("frozen manifest has duplicate or empty candidate IDs")
+
+        input_rows = _mapping_rows(manifest.get("inputs"))
+        inputs = {
+            str(item.get("binary") or ""): item
+            for item in input_rows
+            if str(item.get("binary") or "")
+        }
+        if len(inputs) != len(input_rows):
+            raise CertificateError("frozen manifest has duplicate or empty input binaries")
+
+        states: dict[str, Mapping[str, Mapping[str, Any]]] = {}
+        binary_paths: dict[str, Path] = {}
+        export_paths: dict[str, Path] = {}
+        for binary, input_row in inputs.items():
+            states_path = _contained_file(
+                root,
+                str(input_row.get("candidate_states_path") or ""),
+                "states",
+            )
+            if _sha256_file(states_path) != str(input_row.get("candidate_states_sha256") or ""):
+                raise CertificateError(f"frozen candidate states changed for {binary}")
+            states_payload = _load_json(states_path)
+            state_rows = _mapping_rows(states_payload.get("candidate_states"))
+            state_index = {
+                str(item.get("candidate_id") or ""): item
+                for item in state_rows
+                if str(item.get("candidate_id") or "")
+            }
+            if len(state_index) != len(state_rows):
+                raise CertificateError(
+                    f"frozen candidate states have duplicate or empty IDs for {binary}"
+                )
+            states[binary] = state_index
+
+            binary_path = _contained_file(
+                root,
+                str(input_row.get("binary_path") or ""),
+                "binary",
+            )
+            if _sha256_file(binary_path) != str(input_row.get("binary_sha256") or ""):
+                raise CertificateError(f"frozen binary changed for {binary}")
+            binary_paths[binary] = binary_path
+
+            export_path = _contained_file(
+                root,
+                str(input_row.get("export_manifest_path") or ""),
+                "export manifest",
+            )
+            if _sha256_file(export_path) != str(input_row.get("export_manifest_sha256") or ""):
+                raise CertificateError(f"frozen export manifest changed for {binary}")
+            export_paths[binary] = export_path
+
+        for candidate_id, candidate in candidates.items():
+            binary = str(candidate.get("binary") or "")
+            if binary not in inputs:
+                raise CertificateError(f"frozen input row is missing for {binary}")
+            if candidate_id not in states[binary]:
+                raise CertificateError(f"candidate state is missing for {candidate_id}")
+
+        return cls(
+            root=root,
+            manifest=manifest,
+            candidates=candidates,
+            inputs=inputs,
+            states=states,
+            binary_paths=binary_paths,
+            export_paths=export_paths,
+        )
+
+    def binary_for_candidate(self, candidate_id: str) -> str:
+        candidate = self._candidates.get(candidate_id)
+        if candidate is None:
+            raise CertificateError(f"unknown frozen candidate: {candidate_id}")
+        return str(candidate.get("binary") or "")
+
+    def sort_key(self, candidate_id: str) -> tuple[str, str]:
+        return self.binary_for_candidate(candidate_id), candidate_id
+
+    def load(self, candidate_id: str) -> CampaignContext:
+        candidate = self._candidates.get(candidate_id)
+        if candidate is None:
+            raise CertificateError(f"unknown frozen candidate: {candidate_id}")
+        binary = str(candidate.get("binary") or "")
+        input_row = self._inputs[binary]
+        state = self._states[binary].get(candidate_id)
+        if state is None:
+            raise CertificateError(f"candidate state is missing for {candidate_id}")
+
+        if self._active_export_binary != binary or self._active_export is None:
+            self._active_export = _load_json(self._export_paths[binary])
+            self._active_export_binary = binary
+
+        binding_path = self.root / "bindings" / f"{candidate_id}.json"
+        binding = _load_json(binding_path)
+        if str(binding.get("candidate_id") or "") != candidate_id:
+            raise CertificateError(f"prepared binding names another candidate: {candidate_id}")
+        if str(binding.get("binary") or "") != binary:
+            raise CertificateError(f"prepared binding names another binary: {candidate_id}")
+
+        return CampaignContext(
+            root=self.root,
+            manifest=self.manifest,
+            candidate=candidate,
+            state=state,
+            binding=binding,
+            input_row=input_row,
+            binary_path=self._binary_paths[binary],
+            export_manifest=self._active_export,
+            shared_cache=self._shared_caches.setdefault(binary, {}),
+        )
+
+
+def check_certificate(
+    campaign_root: Path,
+    certificate_path: Path,
+    *,
+    _context: CampaignContext | None = None,
+) -> dict[str, Any]:
     """Recompute and validate one certificate from frozen campaign bytes."""
 
     root = Path(campaign_root).resolve()
@@ -219,7 +388,11 @@ def check_certificate(campaign_root: Path, certificate_path: Path) -> dict[str, 
     if rule_id not in (*REGISTERED_RULES, SEMANTIC_INVESTIGATION_RULE):
         raise CertificateError(f"unsupported certificate rule: {rule_id!r}")
 
-    context = load_campaign_context(root, candidate_id)
+    context = _context or load_campaign_context(root, candidate_id)
+    if context.root != root:
+        raise CertificateError("prevalidated context belongs to another campaign")
+    if str(context.candidate.get("candidate_id") or "") != candidate_id:
+        raise CertificateError("prevalidated context belongs to another candidate")
     _check_manifest_reference(context, certificate)
     _check_tool_references(root, certificate)
     _check_binding_reference(context, certificate)
@@ -277,55 +450,9 @@ def _check_semantic_investigation_certificate(
 
 
 def load_campaign_context(campaign_root: Path, candidate_id: str) -> CampaignContext:
-    root = Path(campaign_root).resolve()
-    manifest_path = root / "frozen_manifest.json"
-    manifest = _load_json(manifest_path)
-    candidates = {
-        str(item.get("candidate_id") or ""): item
-        for item in _mapping_rows(manifest.get("candidates"))
-    }
-    if candidate_id not in candidates:
-        raise CertificateError(f"unknown frozen candidate: {candidate_id}")
-    candidate = candidates[candidate_id]
-    binary = str(candidate.get("binary") or "")
-    input_row = next(
-        (item for item in _mapping_rows(manifest.get("inputs")) if item.get("binary") == binary),
-        None,
-    )
-    if input_row is None:
-        raise CertificateError(f"frozen input row is missing for {binary}")
-    states_path = _contained_file(root, str(input_row.get("candidate_states_path") or ""), "states")
-    if _sha256_file(states_path) != str(input_row.get("candidate_states_sha256") or ""):
-        raise CertificateError(f"frozen candidate states changed for {binary}")
-    states_payload = _load_json(states_path)
-    states = {
-        str(item.get("candidate_id") or ""): item
-        for item in _mapping_rows(states_payload.get("candidate_states"))
-    }
-    if candidate_id not in states:
-        raise CertificateError(f"candidate state is missing for {candidate_id}")
-    binary_path = _contained_file(root, str(input_row.get("binary_path") or ""), "binary")
-    if _sha256_file(binary_path) != str(input_row.get("binary_sha256") or ""):
-        raise CertificateError(f"frozen binary changed for {binary}")
-    export_path = _contained_file(
-        root,
-        str(input_row.get("export_manifest_path") or ""),
-        "export manifest",
-    )
-    if _sha256_file(export_path) != str(input_row.get("export_manifest_sha256") or ""):
-        raise CertificateError(f"frozen export manifest changed for {binary}")
-    binding_path = root / "bindings" / f"{candidate_id}.json"
-    binding = _load_json(binding_path)
-    return CampaignContext(
-        root=root,
-        manifest=manifest,
-        candidate=candidate,
-        state=states[candidate_id],
-        binding=binding,
-        input_row=input_row,
-        binary_path=binary_path,
-        export_manifest=_load_json(export_path),
-    )
+    """Independently validate disk state and load one candidate context."""
+
+    return CampaignContextIndex.build(campaign_root).load(candidate_id)
 
 
 def derive_rule_proof(context: CampaignContext, rule_id: str) -> dict[str, Any]:
@@ -417,6 +544,8 @@ def derive_rule_proof(context: CampaignContext, rule_id: str) -> dict[str, Any]:
         return _derive_c_client_context(context)
     if rule_id == LIBUBOX_BLOBMSG_VALUE_RULE:
         return _derive_libubox_blobmsg_value(context)
+    if rule_id == C_PROCESS_SPLIT_LIFETIME_RULE:
+        return _derive_c_process_split_lifetime(context)
     raise RuleNotApplicable(f"unregistered rule {rule_id!r}")
 
 
@@ -567,7 +696,8 @@ def _derive_libubox_list_store(context: CampaignContext) -> dict[str, Any]:
         "reference binary",
     )
     operation_address = _hex_int(binding.get("address"), "operation address")
-    vma, _, _ = _operation_bytes(context, operation_address, 1)
+    operation_mapping = _reference_operation_mapping(context, mapping, operation_address)
+    vma = int(operation_mapping["reference_vma"])
     frames = _addr2line_frames(reference_path, vma)
     helper_frame = next(
         (
@@ -585,7 +715,7 @@ def _derive_libubox_list_store(context: CampaignContext) -> dict[str, Any]:
         str(helper_frame.get("path") or ""),
         "libubox list source",
     )
-    source_lines = source_path.read_text(encoding="utf-8").splitlines()
+    source_lines = _read_source_text(source_path).splitlines()
     line_number = int(helper_frame["line"])
     if line_number > len(source_lines):
         raise CertificateError("DWARF list source line is outside the source file")
@@ -620,6 +750,7 @@ def _derive_libubox_list_store(context: CampaignContext) -> dict[str, Any]:
         "rule_claim": "candidate assigns a decompiler object to a typed intrusive-list field STORE",
         "operation_address": _hex(operation_address),
         "elf_virtual_address": _hex(vma),
+        "operation_mapping": operation_mapping,
         "dwarf_frames": normalized_frames,
         "typed_source": {
             "path": _relative_if_contained(context.root, source_path),
@@ -1011,9 +1142,44 @@ def _derive_libubox_blobmsg_initialization(context: CampaignContext) -> dict[str
     lines = source["lines"]
     line_number = int(frame["line"])
     statement = lines[line_number - 1].strip()
-    if not re.search(r"\btb\b", statement):
+    function_name = str(frame["function"])
+    function_prefix = _source_function_prefix(lines, function_name, line_number)
+    macro_line: int | None = None
+    reads_table = re.search(r"\btb\b", statement) is not None
+    macro_call = re.match(r"(?P<name>[A-Za-z_]\w*)\s*\(", statement)
+    if not reads_table and macro_call is not None:
+        definition = re.compile(
+            rf"^\s*#\s*define\s+{re.escape(macro_call.group('name'))}\s*\("
+        )
+        for index in range(line_number - 1, -1, -1):
+            if not definition.search(lines[index]):
+                continue
+            macro_lines = [lines[index]]
+            cursor = index
+            while macro_lines[-1].rstrip().endswith("\\") and cursor + 1 < len(lines):
+                cursor += 1
+                macro_lines.append(lines[cursor])
+            if re.search(r"\btb\s*\[", "\n".join(macro_lines)):
+                reads_table = True
+                macro_line = index + 1
+            break
+    if not reads_table:
         raise RuleNotApplicable("exact source operation does not read a parsed attribute table")
-    function_prefix = _source_function_prefix(lines, str(frame["function"]), line_number)
+    parameter_table = re.search(
+        rf"\b{re.escape(function_name)}\s*\([^)]*"
+        r"struct\s+blob_attr\s*\*\s*\*\s*tb\s*\)",
+        function_prefix,
+        re.DOTALL,
+    )
+    if parameter_table is not None:
+        return _derive_parameter_blobmsg_initialization(
+            context,
+            source,
+            function_name=function_name,
+            line_number=line_number,
+            statement=statement,
+            macro_line=macro_line,
+        )
     array_declarations = list(
         re.finditer(
             r"struct\s+blob_attr\s*\*\s*tb\s*\[\s*(?P<count>(?:[A-Za-z_]\w*|\d+))\s*\]\s*;",
@@ -1259,6 +1425,129 @@ def _derive_c_immediate_assignment(context: CampaignContext) -> dict[str, Any]:
             "path_coverage": (
                 "every path reaching the immediately following source statement executes "
                 "the assignment in the same lexical block"
+            ),
+        },
+        "claims": {
+            "exact_operation": True,
+            "source_or_binary_binding": True,
+            "all_path_initialization": True,
+        },
+    }
+
+
+def _derive_parameter_blobmsg_initialization(
+    context: CampaignContext,
+    source: Mapping[str, Any],
+    *,
+    function_name: str,
+    line_number: int,
+    statement: str,
+    macro_line: int | None,
+) -> dict[str, Any]:
+    lines = source["lines"]
+    source_text = "\n".join(lines)
+    call_pattern = re.compile(
+        rf"\b{re.escape(function_name)}\s*\(\s*[^,;]+\s*,\s*"
+        r"(?P<table>[A-Za-z_]\w*)\s*\)\s*;"
+    )
+    calls = list(call_pattern.finditer(source_text))
+    if len(calls) != 1:
+        raise RuleNotApplicable(
+            f"parsed-table helper has {len(calls)} source call sites instead of one"
+        )
+    call = calls[0]
+    table = call.group("table")
+    prefix = source_text[: call.start()]
+    declarations = list(
+        re.finditer(
+            rf"struct\s+blob_attr\s*\*\s*{re.escape(table)}\s*\[\s*"
+            r"(?P<count>[A-Za-z_]\w*|\d+)\s*\]\s*;",
+            prefix,
+        )
+    )
+    if not declarations:
+        raise RuleNotApplicable("caller does not declare the passed blob attribute table")
+    declaration = declarations[-1]
+    count_name = declaration.group("count")
+    parser_pattern = re.compile(
+        r"(?P<function>blobmsg_parse(?:_array)?)\s*\(\s*"
+        r"(?P<policy>&?[A-Za-z_]\w*)\s*,\s*(?P<count>[^,]+?)\s*,\s*"
+        rf"{re.escape(table)}\s*,[^;]*\)\s*;",
+        re.DOTALL,
+    )
+    parser_calls = [
+        match
+        for match in parser_pattern.finditer(
+            source_text, declaration.end(), call.start()
+        )
+    ]
+    if len(parser_calls) != 1:
+        raise RuleNotApplicable(
+            "caller does not initialize the passed table exactly once before the call"
+        )
+    parser = parser_calls[0]
+    count_expression = " ".join(parser.group("count").split())
+    if count_expression not in {count_name, f"ARRAY_SIZE({table})"}:
+        raise RuleNotApplicable("caller parser count does not equal the table capacity")
+    parse_function = parser.group("function")
+    dependency = _libubox_blobmsg_contract(
+        context,
+        _mapping(source.get("mapping")),
+        function=parse_function,
+    )
+
+    def source_line(offset: int) -> int:
+        return source_text[:offset].count("\n") + 1
+
+    declaration_line = source_line(declaration.start())
+    parser_line = source_line(parser.start())
+    call_line = source_line(call.start())
+    evidence_lines = [line_number, declaration_line, parser_line, call_line]
+    if macro_line is not None:
+        evidence_lines.append(macro_line)
+    evidence_lines = sorted(set(evidence_lines))
+    source_binding = _source_binding(
+        context,
+        source,
+        source_function=function_name,
+        source_lines=evidence_lines,
+    )
+    return {
+        "rule_claim": (
+            "the sole caller passes a full-capacity table initialized by blobmsg_parse, "
+            "and the exact helper expression assigns its local from that table"
+        ),
+        "operation_address": str(context.binding.get("address") or ""),
+        "source_binding": source_binding,
+        "source_excerpt": {
+            "path": source_binding["source_path"],
+            "sha256": source_binding["source_sha256"],
+            "function": function_name,
+            "line": line_number,
+            "statement": statement,
+            "macro_definition_line": macro_line,
+        },
+        "caller_contract": {
+            "caller_count": 1,
+            "table": table,
+            "element_count": count_name,
+            "declaration_line": declaration_line,
+            "parser_line": parser_line,
+            "call_line": call_line,
+            "parser_count_expression": count_expression,
+        },
+        "dependency_contract": dependency,
+        "additional_source_refs": [
+            dependency["package_makefile"],
+            dependency["source_archive"],
+        ],
+        "initialization": {
+            "destination": table,
+            "byte_count_expression": f"{count_name} * sizeof(*{table})",
+            "value": 0,
+            "path_coverage": (
+                f"{parse_function} initializes every table slot before the sole call to "
+                f"{function_name}"
             ),
         },
         "claims": {
@@ -2607,7 +2896,7 @@ def _derive_c_startup_allocation(context: CampaignContext) -> dict[str, Any]:
         Path(source["source_root"]) / str(contract["caller"]),
         "startup allocation caller source",
     )
-    caller_text = caller.read_text(encoding="utf-8")
+    caller_text = _read_source_text(caller)
     if re.search(str(contract["caller_pattern"]), caller_text, re.DOTALL) is None:
         raise RuleNotApplicable("allocation function is not bound to the startup caller")
     caller_ref = {
@@ -2937,7 +3226,7 @@ def _derive_c_urldecode(context: CampaignContext) -> dict[str, Any]:
             Path(source["source_root"]) / name,
             "URL-decode caller source",
         )
-        caller_text = caller.read_text(encoding="utf-8")
+        caller_text = _read_source_text(caller)
         if not all(re.search(pattern, caller_text, re.DOTALL) for pattern in patterns):
             raise RuleNotApplicable(f"URL-decode caller capacity changed in {name}")
         caller_refs.append(
@@ -3281,7 +3570,7 @@ def _derive_musl_glob(context: CampaignContext) -> dict[str, Any]:
         next((sdk_root / "staging_dir").glob("toolchain-*/info.mk")),
         "SDK toolchain info",
     )
-    if "LIBC_VERSION=1.2.5" not in info.read_text(encoding="utf-8"):
+    if "LIBC_VERSION=1.2.5" not in _read_source_text(info):
         raise CertificateError("SDK toolchain no longer pins musl 1.2.5")
     musl_archive = _contained_file(
         context.root,
@@ -3361,7 +3650,7 @@ def _derive_c_typed_member(context: CampaignContext) -> dict[str, Any]:
         Path(source["source_root"]) / "progress.h",
         "progress structure header",
     )
-    header_text = header.read_text(encoding="utf-8")
+    header_text = _read_source_text(header)
     if not re.search(
         r"struct\s+progress\s*\{[^}]*unsigned\s+int\s+last_update_sec\s*;[^}]*\}",
         header_text,
@@ -3373,7 +3662,7 @@ def _derive_c_typed_member(context: CampaignContext) -> dict[str, Any]:
         Path(source["source_root"]) / "uclient-fetch.c",
         "progress caller source",
     )
-    caller_text = callers.read_text(encoding="utf-8")
+    caller_text = _read_source_text(callers)
     if "static struct progress pmt;" not in caller_text or "progress_update(&pmt," not in caller_text:
         raise RuleNotApplicable("progress_update caller no longer passes the static object")
     source_binding = _source_binding(
@@ -3442,7 +3731,7 @@ def _derive_libubox_json_abort(context: CampaignContext) -> dict[str, Any]:
     if len(headers) != 1:
         raise CertificateError("pinned SDK lacks one target json_script.h")
     header = _contained_file(context.root, headers[0], "json_script header")
-    header_text = header.read_text(encoding="utf-8")
+    header_text = _read_source_text(header)
     if "bool abort;" not in header_text or not re.search(
         r"json_script_abort\s*\([^)]*ctx\)\s*\{\s*ctx->abort\s*=\s*true\s*;\s*\}",
         header_text,
@@ -3523,14 +3812,14 @@ def _derive_c_trusted_allocation(context: CampaignContext) -> dict[str, Any]:
             Path(source["source_root"]) / "service" / "instance.c",
             "watch_add caller",
         )
-        if len(re.findall(r"\bwatch_add\s*\(", caller.read_text(encoding="utf-8"))) != 1:
+        if len(re.findall(r"\bwatch_add\s*\(", _read_source_text(caller))) != 1:
             raise RuleNotApplicable("watch_add caller enumeration changed")
         caller_refs.append({"path": _relative_if_contained(context.root, caller), "sha256": _sha256_file(caller), "kind": "trust_boundary_review"})
     elif function == "uh_interpreter_add":
         caller = _contained_file(
             context.root, Path(source["source_root"]) / "main.c", "interpreter callers"
         )
-        if len(re.findall(r"\buh_interpreter_add\s*\(", caller.read_text(encoding="utf-8"))) != 2:
+        if len(re.findall(r"\buh_interpreter_add\s*\(", _read_source_text(caller))) != 2:
             raise RuleNotApplicable("interpreter caller enumeration changed")
         caller_refs.append({"path": _relative_if_contained(context.root, caller), "sha256": _sha256_file(caller), "kind": "trust_boundary_review"})
     source_binding = _source_binding(
@@ -3577,7 +3866,7 @@ def _derive_c_client_context(context: CampaignContext) -> dict[str, Any]:
     call_refs: list[dict[str, str]] = []
     call_count = 0
     for path in sorted(source_root.glob("*.c")):
-        text = path.read_text(encoding="utf-8")
+        text = _read_source_text(path)
         calls = re.findall(r"(?:uh_|ops->)http_header\s*\(\s*([^,]+),", text)
         if not calls:
             continue
@@ -3681,6 +3970,411 @@ def _derive_libubox_blobmsg_value(context: CampaignContext) -> dict[str, Any]:
     }
 
 
+def _derive_c_process_split_lifetime(context: CampaignContext) -> dict[str, Any]:
+    vulnerability_type = str(context.state.get("vulnerability_type") or "")
+    if vulnerability_type not in {"double_close", "use_after_close"}:
+        raise RuleNotApplicable("candidate is not a descriptor-lifetime candidate")
+    first_address = str(_mapping(context.state.get("source")).get("operation_address") or "")
+    if not first_address:
+        raise RuleNotApplicable("candidate has no exact first lifetime operation")
+    sink_address = str(context.binding.get("address") or "")
+    first_contexts = _source_contexts_for_operation(context, first_address)
+    sink_contexts = _source_contexts_for_operation(context, sink_address)
+
+    matches: list[tuple[int, int, int, dict[str, Any], dict[str, Any], dict[str, Any]]] = []
+    for first_index, first in enumerate(first_contexts):
+        for sink_index, sink in enumerate(sink_contexts):
+            if Path(first["source_path"]) != Path(sink["source_path"]):
+                continue
+            first_frame = _mapping(first.get("frame"))
+            sink_frame = _mapping(sink.get("frame"))
+            if str(first_frame.get("function") or "") != str(
+                sink_frame.get("function") or ""
+            ):
+                continue
+            first_line = int(first_frame.get("line") or 0)
+            sink_line = int(sink_frame.get("line") or 0)
+            classification = _classify_process_split(
+                first["lines"], first_line=first_line, sink_line=sink_line
+            )
+            if classification is not None:
+                matches.append(
+                    (
+                        first_index + sink_index,
+                        first_index,
+                        sink_index,
+                        first,
+                        sink,
+                        classification,
+                    )
+                )
+    if not matches:
+        raise RuleNotApplicable(
+            "exact source does not prove a process split or terminating first-operation path"
+        )
+    _, _, _, first, sink, control_flow = min(matches, key=lambda item: item[:3])
+    first_frame = _mapping(first.get("frame"))
+    sink_frame = _mapping(sink.get("frame"))
+    first_line = int(first_frame["line"])
+    sink_line = int(sink_frame["line"])
+    evidence_lines = sorted(
+        {
+            first_line,
+            sink_line,
+            *(int(item) for item in control_flow.get("evidence_lines", [])),
+        }
+    )
+    source_function = str(first_frame.get("function") or "")
+    source_binding = _source_binding(
+        context,
+        first,
+        source_function=source_function,
+        source_lines=evidence_lines,
+    )
+    process_contract: dict[str, Any] | None = None
+    additional_refs: list[dict[str, str]] = []
+    if str(control_flow.get("kind") or "") in {"fork_if_child", "fork_switch_child"}:
+        process_contract = _sdk_process_contract(
+            context,
+            _mapping(first.get("mapping")),
+            require_exec=bool(control_flow.get("exec_function")),
+        )
+        additional_refs.extend(
+            [process_contract["sdk_archive"], process_contract["process_header"]]
+        )
+
+    first_exact = first_contexts[0]
+    sink_exact = sink_contexts[0]
+    first_exact_frame = _mapping(first_exact.get("frame"))
+    sink_exact_frame = _mapping(sink_exact.get("frame"))
+    proof: dict[str, Any] = {
+        "rule_claim": (
+            "the first and later descriptor operations are mutually exclusive across "
+            "a child/parent process split"
+            if process_contract is not None
+            else "the first descriptor operation is followed by a verified non-returning error path"
+        ),
+        "operation_address": sink_address,
+        "source_binding": source_binding,
+        "source_excerpt": {
+            "path": source_binding["source_path"],
+            "sha256": source_binding["source_sha256"],
+            "function": source_function,
+            "lines": evidence_lines,
+            "statements": [
+                first["lines"][line - 1].strip()
+                for line in evidence_lines
+                if 0 < line <= len(first["lines"])
+            ],
+        },
+        "exact_lifetime_operations": {
+            "first": {
+                "address": first_address,
+                "source_path": _relative_if_contained(
+                    context.root, Path(first_exact["source_path"])
+                ),
+                "function": str(first_exact_frame.get("function") or ""),
+                "line": int(first_exact_frame.get("line") or 0),
+            },
+            "later": {
+                "address": sink_address,
+                "source_path": _relative_if_contained(
+                    context.root, Path(sink_exact["source_path"])
+                ),
+                "function": str(sink_exact_frame.get("function") or ""),
+                "line": int(sink_exact_frame.get("line") or 0),
+            },
+        },
+        "control_flow": control_flow,
+        "additional_source_refs": additional_refs,
+        "claims": {
+            "exact_operation": True,
+            "source_or_binary_binding": True,
+            "resource_lifetime_modeled": True,
+            "mutually_exclusive_paths": process_contract is not None,
+            "terminating_path": process_contract is None,
+        },
+    }
+    if process_contract is not None:
+        proof["process_contract"] = process_contract
+    return proof
+
+
+def _classify_process_split(
+    lines: Sequence[str],
+    *,
+    first_line: int,
+    sink_line: int,
+) -> dict[str, Any] | None:
+    """Conservatively recognize source shapes that separate lifetime events."""
+
+    if not (0 < first_line < sink_line <= len(lines)):
+        return None
+    pairs = _c_brace_pairs(lines)
+
+    # A direct fork switch has a child case containing the first event and a
+    # distinct parent/default case containing the later event.  The child must
+    # either replace its process image or return on exec failure.
+    for open_line, close_line in pairs:
+        if not (open_line <= first_line < sink_line <= close_line):
+            continue
+        header_start, header = _c_block_header(lines, open_line)
+        if not re.search(r"\bswitch\s*\([^)]*\bfork\s*\(", header, re.DOTALL):
+            continue
+        case_zero = _first_matching_line(lines, open_line, first_line, r"^\s*case\s+0\s*:")
+        default = _first_matching_line(lines, first_line + 1, sink_line, r"^\s*default\s*:")
+        if case_zero is None or default is None:
+            continue
+        child_text = "\n".join(lines[first_line - 1 : default - 1])
+        exec_match = re.search(r"\b(exec(?:l|v|le|ve|lp|vp))\s*\(", child_text)
+        if exec_match is None or not re.search(r"\breturn\b", child_text[exec_match.end() :]):
+            continue
+        exec_line = first_line + child_text[: exec_match.start()].count("\n")
+        return_line = first_line + child_text[: child_text.rfind("return")].count("\n")
+        return {
+            "kind": "fork_switch_child",
+            "fork_function": "fork",
+            "exec_function": exec_match.group(1),
+            "child_case_line": case_zero,
+            "parent_case_line": default,
+            "switch_header_start_line": header_start,
+            "switch_open_line": open_line,
+            "switch_close_line": close_line,
+            "exec_line": exec_line,
+            "failure_return_line": return_line,
+            "reason": (
+                "fork returns zero only in the child; successful exec replaces that process, "
+                "and exec failure returns before the parent/default operations"
+            ),
+            "evidence_lines": [
+                header_start,
+                case_zero,
+                first_line,
+                exec_line,
+                return_line,
+                default,
+                sink_line,
+            ],
+        }
+
+    # A braced `if (fork-wrapper(...) == 0)` child path must terminate through
+    # a source-declared NORETURN function before control can reach parent code.
+    for open_line, close_line in pairs:
+        if not (open_line <= first_line <= close_line < sink_line):
+            continue
+        header_start, header = _c_block_header(lines, open_line)
+        if not re.search(r"\bif\s*\(", header):
+            continue
+        fork_match = re.search(r"\b(fork\w*)\s*\([^;]*\)\s*==\s*0", header, re.DOTALL)
+        if fork_match is None:
+            continue
+        terminal = _noreturn_call_after(lines, first_line, close_line)
+        if terminal is None:
+            continue
+        wrapper = None
+        fork_function = fork_match.group(1)
+        if fork_function != "fork":
+            wrapper = _fork_wrapper_contract(lines, fork_function)
+            if wrapper is None:
+                continue
+        evidence_lines = [
+            header_start,
+            first_line,
+            int(terminal["call_line"]),
+            int(terminal["declaration_line"]),
+            close_line,
+            sink_line,
+        ]
+        if terminal.get("macro_line"):
+            evidence_lines.append(int(terminal["macro_line"]))
+        if wrapper is not None:
+            evidence_lines.extend(int(item) for item in wrapper["evidence_lines"])
+        return {
+            "kind": "fork_if_child",
+            "fork_function": fork_function,
+            "child_if_header_start_line": header_start,
+            "child_open_line": open_line,
+            "child_close_line": close_line,
+            "terminal": terminal,
+            "fork_wrapper": wrapper,
+            "reason": (
+                "the zero fork result selects only the child, and a source-declared "
+                "NORETURN call prevents the child from reaching the later parent operation"
+            ),
+            "evidence_lines": evidence_lines,
+        }
+
+    # An earlier event in a completed conditional cannot reach a later event
+    # when every suffix of that conditional calls a source-declared NORETURN
+    # routine (directly or through a macro).
+    for open_line, close_line in pairs:
+        if not (open_line <= first_line <= close_line < sink_line):
+            continue
+        header_start, header = _c_block_header(lines, open_line)
+        if not re.search(r"\bif\s*\(", header):
+            continue
+        terminal = _noreturn_call_after(lines, first_line, close_line)
+        if terminal is None:
+            continue
+        evidence_lines = [
+            header_start,
+            first_line,
+            int(terminal["call_line"]),
+            int(terminal["declaration_line"]),
+            close_line,
+            sink_line,
+        ]
+        if terminal.get("macro_line"):
+            evidence_lines.append(int(terminal["macro_line"]))
+        return {
+            "kind": "terminating_error_block",
+            "if_header_start_line": header_start,
+            "block_open_line": open_line,
+            "block_close_line": close_line,
+            "terminal": terminal,
+            "reason": "the first operation's conditional path terminates before the later operation",
+            "evidence_lines": evidence_lines,
+        }
+    return None
+
+
+def _c_brace_pairs(lines: Sequence[str]) -> list[tuple[int, int]]:
+    stack: list[int] = []
+    pairs: list[tuple[int, int]] = []
+    in_block_comment = False
+    for line_number, raw_line in enumerate(lines, start=1):
+        index = 0
+        in_string = ""
+        while index < len(raw_line):
+            char = raw_line[index]
+            following = raw_line[index + 1] if index + 1 < len(raw_line) else ""
+            if in_block_comment:
+                if char == "*" and following == "/":
+                    in_block_comment = False
+                    index += 2
+                    continue
+                index += 1
+                continue
+            if not in_string and char == "/" and following == "*":
+                in_block_comment = True
+                index += 2
+                continue
+            if not in_string and char == "/" and following == "/":
+                break
+            if char in {'"', "'"}:
+                if in_string == char:
+                    in_string = ""
+                elif not in_string:
+                    in_string = char
+                index += 1
+                continue
+            if in_string:
+                if char == "\\":
+                    index += 2
+                else:
+                    index += 1
+                continue
+            if char == "{":
+                stack.append(line_number)
+            elif char == "}" and stack:
+                pairs.append((stack.pop(), line_number))
+            index += 1
+    return sorted(pairs, key=lambda item: (item[0], -item[1]))
+
+
+def _c_block_header(lines: Sequence[str], open_line: int) -> tuple[int, str]:
+    start = open_line
+    while start > 1 and open_line - start < 5:
+        previous = lines[start - 2].strip()
+        if (
+            not previous
+            or previous.endswith((";", "}", "{", "*/"))
+            or re.match(r"^(?:case\b|default\s*:)", previous)
+        ):
+            break
+        start -= 1
+    return start, "\n".join(lines[start - 1 : open_line])
+
+
+def _first_matching_line(
+    lines: Sequence[str], start: int, stop: int, pattern: str
+) -> int | None:
+    regex = re.compile(pattern)
+    for line_number in range(max(1, start), min(len(lines), stop) + 1):
+        if regex.search(lines[line_number - 1]):
+            return line_number
+    return None
+
+
+def _noreturn_call_after(
+    lines: Sequence[str], start_line: int, stop_line: int
+) -> dict[str, Any] | None:
+    source_text = "\n".join(lines)
+    region = "\n".join(lines[start_line:stop_line])
+    for match in re.finditer(r"\b([A-Za-z_]\w*)\s*\(", region):
+        call = match.group(1)
+        if call in {"if", "for", "while", "switch", "sizeof"}:
+            continue
+        call_line = start_line + 1 + region[: match.start()].count("\n")
+        terminal = call
+        macro_line: int | None = None
+        macro = re.search(
+            rf"(?m)^\s*#\s*define\s+{re.escape(call)}\s*\([^\n]*\)\s+"
+            rf"(?P<target>[A-Za-z_]\w*)\s*\(",
+            source_text,
+        )
+        if macro is not None:
+            terminal = macro.group("target")
+            macro_line = source_text[: macro.start()].count("\n") + 1
+        declarations = (
+            rf"\b{re.escape(terminal)}\s*\([^;{{}}]*\)\s*NORETURN\s*;",
+            rf"NORETURN[^;{{}}]{{0,100}}\b{re.escape(terminal)}\s*\(",
+        )
+        declaration: re.Match[str] | None = None
+        for pattern in declarations:
+            declaration = re.search(pattern, source_text, re.DOTALL)
+            if declaration is not None:
+                break
+        if declaration is None:
+            continue
+        declaration_line = source_text[: declaration.start()].count("\n") + 1
+        return {
+            "call": call,
+            "call_line": call_line,
+            "noreturn_function": terminal,
+            "declaration_line": declaration_line,
+            "macro_line": macro_line,
+        }
+    return None
+
+
+def _fork_wrapper_contract(lines: Sequence[str], function: str) -> dict[str, Any] | None:
+    for open_line, close_line in _c_brace_pairs(lines):
+        header_start, header = _c_block_header(lines, open_line)
+        if not re.search(rf"\b{re.escape(function)}\s*\(", header):
+            continue
+        if re.search(r"\b(?:if|for|while|switch)\s*\(", header):
+            continue
+        body = "\n".join(lines[open_line - 1 : close_line])
+        fork_line = _first_matching_line(lines, open_line, close_line, r"\bfork\s*\(")
+        child_line = _first_matching_line(lines, open_line, close_line, r"\bpid\s*==\s*0\b")
+        return_line = _first_matching_line(lines, open_line, close_line, r"\breturn\s+pid\s*;")
+        if fork_line is None or child_line is None or return_line is None:
+            continue
+        if not re.search(r"\bpid\s*=\s*fork\s*\(\s*\)\s*;", body):
+            continue
+        return {
+            "function": function,
+            "definition_start_line": header_start,
+            "definition_end_line": close_line,
+            "fork_line": fork_line,
+            "child_dispatch_line": child_line,
+            "return_line": return_line,
+            "evidence_lines": [header_start, fork_line, child_line, return_line],
+        }
+    return None
+
+
 def _unique_source_array_definition(
     source: Mapping[str, Any],
     name: str,
@@ -3692,7 +4386,7 @@ def _unique_source_array_definition(
     )
     matches: list[tuple[Path, re.Match[str]]] = []
     for path in sorted((*source_root.rglob("*.c"), *source_root.rglob("*.h"))):
-        text = path.read_text(encoding="utf-8")
+        text = _read_source_text(path)
         matches.extend(
             (path, match)
             for match in pattern.finditer(text)
@@ -3725,7 +4419,8 @@ def _disassembly_window(
         "reference binary",
     )
     operation_address = _hex_int(context.binding.get("address"), "operation address")
-    vma, _, _ = _operation_bytes(context, operation_address, 1)
+    operation_mapping = _reference_operation_mapping(context, mapping, operation_address)
+    vma = int(operation_mapping["reference_vma"])
     try:
         result = subprocess.run(
             [
@@ -3787,7 +4482,7 @@ def _libubox_blobmsg_contract(
         sdk_root / "feeds" / "base" / "package" / "libs" / "libubox" / "Makefile",
         "libubox package Makefile",
     )
-    makefile_text = makefile.read_text(encoding="utf-8")
+    makefile_text = _read_source_text(makefile)
     version_match = re.search(r"^PKG_SOURCE_VERSION:=(?P<value>[0-9a-f]{40})$", makefile_text, re.MULTILINE)
     mirror_match = re.search(r"^PKG_MIRROR_HASH:=(?P<value>[0-9a-f]{64})$", makefile_text, re.MULTILINE)
     if version_match is None or mirror_match is None:
@@ -4036,7 +4731,7 @@ def _sdk_api_contract(
     if len(headers) != 1:
         raise CertificateError(f"pinned SDK does not contain exactly one {api} header")
     header = headers[0]
-    header_text = header.read_text(encoding="utf-8")
+    header_text = _read_source_text(header)
     declaration = {
         "stat": r"int\s+stat\s*\([^;]*struct\s+stat\s*\*[^;]*\)\s*;",
         "glob": r"int\s+glob\s*\([^;]*glob_t\s*\*[^;]*\)\s*;",
@@ -4067,6 +4762,65 @@ def _sdk_api_contract(
     }
 
 
+def _sdk_process_contract(
+    context: CampaignContext,
+    mapping: Mapping[str, Any],
+    *,
+    require_exec: bool,
+) -> dict[str, Any]:
+    sdk_ref = _mapping(mapping.get("sdk"))
+    sdk_archive = _contained_file(
+        context.root,
+        str(sdk_ref.get("path") or ""),
+        "OpenWrt SDK archive",
+    )
+    sdk_hash = _sha256_file(sdk_archive)
+    if sdk_hash != str(sdk_ref.get("sha256") or "") or sdk_hash != OPENWRT_24_10_4_X86_64_SDK_SHA256:
+        raise CertificateError("process contract is not bound to the pinned OpenWrt SDK")
+    if not sdk_archive.name.endswith(".tar.zst"):
+        raise CertificateError("pinned SDK archive name is unexpected")
+    sdk_root = sdk_archive.with_name(sdk_archive.name[: -len(".tar.zst")])
+    if not sdk_root.is_dir():
+        raise CertificateError("extracted pinned SDK is missing")
+    headers = sorted((sdk_root / "staging_dir").glob("toolchain-*/include/unistd.h"))
+    headers = [
+        _contained_file(context.root, header, "SDK process header") for header in headers
+    ]
+    if len(headers) != 1:
+        raise CertificateError("pinned SDK does not contain exactly one process header")
+    header = headers[0]
+    header_text = _read_source_text(header)
+    fork_match = re.search(r"pid_t\s+fork\s*\(\s*void\s*\)\s*;", header_text)
+    if fork_match is None:
+        raise CertificateError("pinned SDK process header lacks fork")
+    exec_declarations = re.findall(
+        r"int\s+(exec(?:l|v|le|ve|lp|vp))\s*\([^;]*\)\s*;",
+        header_text,
+        re.DOTALL,
+    )
+    if require_exec and not exec_declarations:
+        raise CertificateError("pinned SDK process header lacks exec declarations")
+    return {
+        "sdk_archive": {
+            "path": _relative_if_contained(context.root, sdk_archive),
+            "sha256": sdk_hash,
+            "kind": "source_review",
+        },
+        "process_header": {
+            "path": _relative_if_contained(context.root, header),
+            "sha256": _sha256_file(header),
+            "kind": "source_review",
+        },
+        "fork_declaration": " ".join(fork_match.group(0).split()),
+        "exec_declarations": sorted(set(exec_declarations)),
+        "process_semantics": (
+            "fork returns zero in the child and the child has a separate descriptor table; "
+            "successful exec replaces only that child process image"
+        ),
+        "sdk_sha256": sdk_hash,
+    }
+
+
 def _bound_export_function(context: CampaignContext) -> Mapping[str, Any]:
     name = str(context.binding.get("function_name") or "")
     address = str(context.binding.get("function_address") or "").lower()
@@ -4082,14 +4836,50 @@ def _bound_export_function(context: CampaignContext) -> Mapping[str, Any]:
 
 
 def _exact_source_context(context: CampaignContext) -> dict[str, Any]:
+    cached = context.cache.get("exact_source_context")
+    if isinstance(cached, Mapping):
+        return dict(cached)
+    cached_error = context.cache.get("exact_source_context_error")
+    if isinstance(cached_error, str):
+        raise RuleNotApplicable(cached_error)
+
+    if (
+        str(context.binding.get("status") or "") != "resolved"
+        or not str(context.binding.get("address") or "")
+        or not str(context.binding.get("pcode") or "")
+    ):
+        reason = "candidate has no resolved exact binary operation"
+        context.cache["exact_source_context_error"] = reason
+        raise RuleNotApplicable(reason)
+
+    contexts = _source_contexts_for_operation(
+        context, str(context.binding.get("address") or "")
+    )
+    result = contexts[0]
+    context.cache["exact_source_context"] = result
+    return result
+
+
+def _source_contexts_for_operation(
+    context: CampaignContext, operation_address_value: str
+) -> list[dict[str, Any]]:
+    operation_address = _hex_int(operation_address_value, "operation address")
+    cache = context.cache.setdefault("source_contexts_by_operation", {})
+    if isinstance(cache, dict):
+        cached = cache.get(operation_address)
+        if isinstance(cached, list):
+            return [dict(item) for item in cached]
+        if isinstance(cached, str):
+            raise RuleNotApplicable(cached)
+
     mapping = _reference_mapping(context)
     reference_path = _contained_file(
         context.root,
         str(_mapping(mapping.get("reference_binary")).get("path") or ""),
         "reference binary",
     )
-    operation_address = _hex_int(context.binding.get("address"), "operation address")
-    vma, _, _ = _operation_bytes(context, operation_address, 1)
+    operation_mapping = _reference_operation_mapping(context, mapping, operation_address)
+    vma = int(operation_mapping["reference_vma"])
     frames = _addr2line_frames(reference_path, vma)
     source_mapping = _mapping(mapping.get("source"))
     source_root = _contained_directory(
@@ -4100,22 +4890,31 @@ def _exact_source_context(context: CampaignContext) -> dict[str, Any]:
     expected_commit = str(source_mapping.get("commit") or "").lower()
     if _git_head(source_root) != expected_commit:
         raise CertificateError("source checkout no longer matches the reference mapping commit")
+    results: list[dict[str, Any]] = []
     for frame in frames:
         source_path = _resolve_frame_source(source_root, str(frame.get("path") or ""))
         if source_path is None:
             continue
-        lines = source_path.read_text(encoding="utf-8").splitlines()
+        lines = _read_source_text(source_path).splitlines()
         line_number = int(frame.get("line") or 0)
         if 0 < line_number <= len(lines):
-            return {
+            results.append({
                 "mapping": mapping,
+                "operation_mapping": operation_mapping,
                 "frame": frame,
                 "source_path": source_path,
                 "source_root": source_root,
                 "lines": lines,
                 "vma": vma,
-            }
-    raise RuleNotApplicable("reference DWARF does not resolve to the pinned source checkout")
+            })
+    if results:
+        if isinstance(cache, dict):
+            cache[operation_address] = results
+        return [dict(item) for item in results]
+    reason = "reference DWARF does not resolve to the pinned source checkout"
+    if isinstance(cache, dict):
+        cache[operation_address] = reason
+    raise RuleNotApplicable(reason)
 
 
 def _source_binding(
@@ -4130,20 +4929,63 @@ def _source_binding(
     frozen = _mapping(mapping.get("frozen_binary"))
     reference = _mapping(mapping.get("reference_binary"))
     source_path = Path(source["source_path"])
-    return {
+    operation_mapping = _mapping(source.get("operation_mapping"))
+    basis = str(operation_mapping.get("mapping_basis") or "")
+    result = {
         "source_path": _relative_if_contained(context.root, source_path),
         "source_sha256": _sha256_file(source_path),
         "source_commit": str(source_mapping.get("commit") or ""),
         "source_function": source_function,
         "source_lines": [int(item) for item in source_lines],
-        "mapping_basis": "exact_code_bytes",
+        "mapping_basis": basis,
         "frozen_binary_sha256": str(frozen.get("sha256") or ""),
-        "frozen_code_sha256": str(_mapping(frozen.get("executable_segments")).get("sha256") or ""),
-        "reference_code_sha256": str(
-            _mapping(reference.get("executable_segments")).get("sha256") or ""
-        ),
-        "code_bytes_match": True,
     }
+    if basis == "exact_code_bytes":
+        result.update(
+            {
+                "frozen_code_sha256": str(
+                    _mapping(frozen.get("executable_segments")).get("sha256") or ""
+                ),
+                "reference_code_sha256": str(
+                    _mapping(reference.get("executable_segments")).get("sha256") or ""
+                ),
+                "code_bytes_match": True,
+            }
+        )
+    elif basis == "function_fingerprint":
+        result.update(
+            {
+                "frozen_function_sha256": str(
+                    operation_mapping.get("frozen_function_sha256") or ""
+                ),
+                "reference_function_sha256": str(
+                    operation_mapping.get("reference_function_sha256") or ""
+                ),
+                "constants_match": operation_mapping.get("constants_match") is True,
+                "call_topology_match": operation_mapping.get("call_topology_match") is True,
+                "constant_signature_sha256": str(
+                    operation_mapping.get("constant_signature_sha256") or ""
+                ),
+                "call_topology_sha256": str(
+                    operation_mapping.get("call_topology_sha256") or ""
+                ),
+                "control_flow_sha256": str(
+                    operation_mapping.get("control_flow_sha256") or ""
+                ),
+                "relocation_shape_sha256": str(
+                    operation_mapping.get("relocation_shape_sha256") or ""
+                ),
+                "frozen_function_address": str(
+                    operation_mapping.get("frozen_function_address") or ""
+                ),
+                "reference_function_address": str(
+                    operation_mapping.get("reference_function_address") or ""
+                ),
+            }
+        )
+    else:
+        raise CertificateError("source context has no verified mapping basis")
+    return result
 
 
 def _resolve_frame_source(source_root: Path, value: str) -> Path | None:
@@ -4152,9 +4994,10 @@ def _resolve_frame_source(source_root: Path, value: str) -> Path | None:
         try:
             path.resolve().relative_to(source_root.resolve())
         except ValueError:
-            return None
-        return path.resolve() if path.is_file() else None
-    parts = path.parts
+            pass
+        else:
+            return path.resolve() if path.is_file() else None
+    parts = path.parts[1:] if path.is_absolute() else path.parts
     for index in range(len(parts)):
         candidate = source_root.joinpath(*parts[index:]).resolve()
         try:
@@ -4211,6 +5054,13 @@ def _git_head(source_root: Path) -> str:
 
 
 def _reference_mapping(context: CampaignContext) -> Mapping[str, Any]:
+    cached = context.cache.get("reference_mapping")
+    if isinstance(cached, Mapping):
+        return cached
+    cached_error = context.cache.get("reference_mapping_error")
+    if isinstance(cached_error, str):
+        raise RuleNotApplicable(cached_error)
+
     binary = str(context.candidate.get("binary") or "")
     row = next(
         (
@@ -4221,13 +5071,13 @@ def _reference_mapping(context: CampaignContext) -> Mapping[str, Any]:
         None,
     )
     if row is None:
-        raise RuleNotApplicable("campaign has no reference-build mapping for this binary")
+        reason = "campaign has no reference-build mapping for this binary"
+        context.cache["reference_mapping_error"] = reason
+        raise RuleNotApplicable(reason)
     mapping_path = _contained_file(context.root, str(row.get("path") or ""), "reference mapping")
     if _sha256_file(mapping_path) != str(row.get("sha256") or ""):
         raise CertificateError("frozen reference mapping changed")
     mapping = _load_json(mapping_path)
-    if mapping.get("code_bytes_match") is not True or mapping.get("direct_source_mapping_allowed") is not True:
-        raise RuleNotApplicable("reference build does not permit direct source mapping")
     frozen = _mapping(mapping.get("frozen_binary"))
     reference = _mapping(mapping.get("reference_binary"))
     frozen_path = _contained_file(context.root, str(frozen.get("path") or ""), "mapped frozen binary")
@@ -4240,13 +5090,307 @@ def _reference_mapping(context: CampaignContext) -> Mapping[str, Any]:
         raise CertificateError("reference mapping names another frozen binary")
     frozen_code = _executable_fingerprint(frozen_path)
     reference_code = _executable_fingerprint(reference_path)
-    if frozen_code != reference_code:
-        raise CertificateError("reference executable bytes do not match the frozen binary")
     if frozen_code != _mapping(frozen.get("executable_segments")):
         raise CertificateError("frozen executable fingerprint disagrees with mapping")
     if reference_code != _mapping(reference.get("executable_segments")):
         raise CertificateError("reference executable fingerprint disagrees with mapping")
+    exact_match = frozen_code == reference_code
+    if mapping.get("code_bytes_match") is not exact_match:
+        raise CertificateError("reference mapping executable-match flag is inconsistent")
+    if mapping.get("direct_source_mapping_allowed") is not exact_match:
+        raise CertificateError("reference mapping direct-source flag is inconsistent")
+    expected_policy = "exact_code_bytes" if exact_match else "function_fingerprint_required"
+    if str(mapping.get("mismatch_policy") or "") != expected_policy:
+        raise CertificateError("reference mapping mismatch policy is inconsistent")
+    context.cache["reference_mapping"] = mapping
     return mapping
+
+
+def _reference_operation_mapping(
+    context: CampaignContext,
+    mapping: Mapping[str, Any],
+    operation_address: int,
+) -> dict[str, Any]:
+    cache = context.cache.setdefault("reference_operation_mappings", {})
+    if isinstance(cache, dict) and operation_address in cache:
+        cached = cache[operation_address]
+        if isinstance(cached, Mapping):
+            return dict(cached)
+        raise RuleNotApplicable(str(cached))
+
+    frozen_vma, _, _ = _operation_bytes(context, operation_address, 1)
+    if mapping.get("code_bytes_match") is True:
+        result = {
+            "mapping_basis": "exact_code_bytes",
+            "frozen_vma": frozen_vma,
+            "reference_vma": frozen_vma,
+        }
+        if isinstance(cache, dict):
+            cache[operation_address] = result
+        return result
+
+    function = _export_function_for_operation(context, operation_address)
+    function_address = _hex_int(function.get("address"), "export function address")
+    frozen_function_vma, _, _ = _operation_bytes(context, function_address, 1)
+    function_size = int(function.get("body_size_bytes") or 0)
+    if function_size <= 0:
+        reason = "frozen export function has no positive byte size"
+        if isinstance(cache, dict):
+            cache[operation_address] = reason
+        raise RuleNotApplicable(reason)
+    operation_offset = frozen_vma - frozen_function_vma
+    frozen_path = _contained_file(
+        context.root,
+        str(_mapping(mapping.get("frozen_binary")).get("path") or ""),
+        "mapped frozen binary",
+    )
+    reference_path = _contained_file(
+        context.root,
+        str(_mapping(mapping.get("reference_binary")).get("path") or ""),
+        "reference binary",
+    )
+    frozen_fingerprint = _normalized_function_fingerprint(
+        frozen_path, frozen_function_vma, function_size
+    )
+    if operation_offset not in frozen_fingerprint["instruction_offsets"]:
+        reason = "exact operation is not a decoded instruction in its frozen function"
+        if isinstance(cache, dict):
+            cache[operation_address] = reason
+        raise RuleNotApplicable(reason)
+    matches = [
+        item
+        for item in _reference_function_index(context, reference_path).get(function_size, [])
+        if item["normalized_function_sha256"]
+        == frozen_fingerprint["normalized_function_sha256"]
+        and item["constant_signature_sha256"]
+        == frozen_fingerprint["constant_signature_sha256"]
+        and item["call_topology_sha256"] == frozen_fingerprint["call_topology_sha256"]
+        and item["control_flow_sha256"] == frozen_fingerprint["control_flow_sha256"]
+        and item["relocation_shape_sha256"]
+        == frozen_fingerprint["relocation_shape_sha256"]
+    ]
+    if len(matches) != 1:
+        reason = (
+            "normalized function fingerprint is absent from the reference build"
+            if not matches
+            else "normalized function fingerprint is ambiguous in the reference build"
+        )
+        if isinstance(cache, dict):
+            cache[operation_address] = reason
+        raise RuleNotApplicable(reason)
+    match = matches[0]
+    if operation_offset not in match["instruction_offsets"]:
+        raise CertificateError("matched function instruction offsets changed")
+    result = {
+        "mapping_basis": "function_fingerprint",
+        "frozen_vma": frozen_vma,
+        "reference_vma": int(match["address"]) + operation_offset,
+        "operation_offset": operation_offset,
+        "function_size_bytes": function_size,
+        "frozen_function_address": _hex(frozen_function_vma),
+        "reference_function_address": _hex(int(match["address"])),
+        "reference_function_names": list(match["names"]),
+        "frozen_function_sha256": frozen_fingerprint["normalized_function_sha256"],
+        "reference_function_sha256": match["normalized_function_sha256"],
+        "constant_signature_sha256": frozen_fingerprint["constant_signature_sha256"],
+        "call_topology_sha256": frozen_fingerprint["call_topology_sha256"],
+        "control_flow_sha256": frozen_fingerprint["control_flow_sha256"],
+        "relocation_shape_sha256": frozen_fingerprint["relocation_shape_sha256"],
+        "constants_match": True,
+        "call_topology_match": True,
+    }
+    if isinstance(cache, dict):
+        cache[operation_address] = result
+    return result
+
+
+def _export_function_for_operation(
+    context: CampaignContext, operation_address: int
+) -> Mapping[str, Any]:
+    matches: list[Mapping[str, Any]] = []
+    for function in _mapping_rows(context.export_manifest.get("functions")):
+        blocks = _mapping_rows(function.get("basic_blocks"))
+        if any(
+            _hex_int(block.get("start"), "basic block start")
+            <= operation_address
+            <= _hex_int(block.get("end"), "basic block end")
+            for block in blocks
+        ):
+            matches.append(function)
+    if len(matches) != 1:
+        raise RuleNotApplicable("exact operation is not in one frozen export function")
+    return matches[0]
+
+
+def _reference_function_index(
+    context: CampaignContext, reference_path: Path
+) -> dict[int, list[dict[str, Any]]]:
+    cached = context.shared_cache.get("reference_function_index")
+    if isinstance(cached, dict):
+        return cached
+    try:
+        result = subprocess.run(
+            ["nm", "-n", "-S", "--defined-only", str(reference_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise CertificateError(f"cannot enumerate reference text symbols: {exc}") from exc
+    symbols: dict[tuple[int, int], set[str]] = {}
+    pattern = re.compile(
+        r"^(?P<address>[0-9a-fA-F]+)\s+(?P<size>[0-9a-fA-F]+)\s+"
+        r"(?P<type>[tTwW])\s+(?P<name>.+)$"
+    )
+    for line in result.stdout.splitlines():
+        match = pattern.match(line.strip())
+        if match is None:
+            continue
+        address = int(match.group("address"), 16)
+        size = int(match.group("size"), 16)
+        if size <= 0:
+            continue
+        symbols.setdefault((address, size), set()).add(match.group("name"))
+    by_size: dict[int, list[dict[str, Any]]] = {}
+    for (address, size), names in sorted(symbols.items()):
+        try:
+            fingerprint = _normalized_function_fingerprint(reference_path, address, size)
+        except RuleNotApplicable:
+            continue
+        by_size.setdefault(size, []).append(
+            {"address": address, "names": sorted(names), **fingerprint}
+        )
+    context.shared_cache["reference_function_index"] = by_size
+    return by_size
+
+
+def _normalized_function_fingerprint(
+    binary_path: Path, function_vma: int, function_size: int
+) -> dict[str, Any]:
+    try:
+        from capstone import CS_ARCH_X86, CS_GRP_CALL, CS_GRP_JUMP, CS_MODE_64, Cs
+        from capstone.x86_const import X86_OP_IMM, X86_OP_MEM, X86_REG_RIP
+    except ImportError as exc:
+        raise CertificateError("Capstone is required for function fingerprint mapping") from exc
+
+    data, elf_type, segments = _elf_layout(binary_path)
+    if elf_type not in {2, 3} or data[4] != 2 or data[5] != 1:
+        raise RuleNotApplicable("function fingerprint supports little-endian x86-64 ELF only")
+    function_bytes = _elf_bytes_at_vma(data, segments, function_vma, function_size)
+    load_ranges = [
+        (int(segment["virtual_address"]), int(segment["virtual_address"]) + int(segment["file_size"]))
+        for segment in segments
+    ]
+
+    def is_loaded_address(value: int) -> bool:
+        # Small integers are overwhelmingly literal constants even when an
+        # ET_DYN image has a zero-based load segment.  Absolute encoded code or
+        # data addresses on the supported x86-64 targets are not below 64 KiB.
+        return abs(value) >= 0x10000 and any(
+            start <= value < end for start, end in load_ranges
+        )
+
+    disassembler = Cs(CS_ARCH_X86, CS_MODE_64)
+    disassembler.detail = True
+    disassembler.skipdata = True
+    normalized = bytearray()
+    constants: list[str] = []
+    calls: list[str] = []
+    control_flow: list[str] = []
+    relocations: list[str] = []
+    instruction_offsets: list[int] = []
+    for instruction in disassembler.disasm(function_bytes, function_vma):
+        offset = int(instruction.address) - function_vma
+        instruction_offsets.append(offset)
+        encoded = bytearray(instruction.bytes)
+        if instruction.id != 0:
+            is_call = instruction.group(CS_GRP_CALL)
+            is_jump = instruction.group(CS_GRP_JUMP)
+            is_control = is_call or is_jump
+            immediate_operands = [
+                operand for operand in instruction.operands if operand.type == X86_OP_IMM
+            ]
+            memory_operands = [
+                operand.mem for operand in instruction.operands if operand.type == X86_OP_MEM
+            ]
+            address_immediate = any(
+                is_loaded_address(int(operand.imm)) for operand in immediate_operands
+            )
+            address_displacement = any(
+                memory.base == X86_REG_RIP or is_loaded_address(int(memory.disp))
+                for memory in memory_operands
+            )
+            if (is_control or address_immediate) and instruction.imm_size:
+                start = int(instruction.imm_offset)
+                size = int(instruction.imm_size)
+                encoded[start : start + size] = b"\0" * size
+            if address_displacement and instruction.disp_size:
+                start = int(instruction.disp_offset)
+                size = int(instruction.disp_size)
+                encoded[start : start + size] = b"\0" * size
+            for operand in immediate_operands:
+                value = int(operand.imm)
+                if not is_control and not is_loaded_address(value):
+                    constants.append(f"{offset}:{int(operand.size)}:{value}")
+            if is_call:
+                kind = "direct" if immediate_operands else "indirect"
+                scope = "external"
+                if immediate_operands:
+                    target = int(immediate_operands[0].imm)
+                    if function_vma <= target < function_vma + function_size:
+                        scope = f"internal:{target - function_vma}"
+                calls.append(f"{offset}:{kind}:{scope}")
+            if is_control and immediate_operands:
+                target = int(immediate_operands[0].imm)
+                scope = (
+                    f"internal:{target - function_vma}"
+                    if function_vma <= target < function_vma + function_size
+                    else "external"
+                )
+                control_flow.append(f"{offset}:{instruction.mnemonic}:{scope}")
+            if address_immediate:
+                relocations.append(f"{offset}:immediate")
+            if address_displacement:
+                relocations.append(f"{offset}:memory")
+        normalized.extend(struct.pack(">H", len(encoded)))
+        normalized.extend(encoded)
+
+    def signature(items: Sequence[str]) -> str:
+        return hashlib.sha256("\n".join(items).encode("utf-8")).hexdigest()
+
+    constant_hash = signature(constants)
+    call_hash = signature(calls)
+    control_hash = signature(control_flow)
+    relocation_hash = signature(relocations)
+    digest = hashlib.sha256()
+    digest.update(normalized)
+    for item in (constant_hash, call_hash, control_hash, relocation_hash):
+        digest.update(item.encode("ascii"))
+    return {
+        "normalized_function_sha256": digest.hexdigest(),
+        "constant_signature_sha256": constant_hash,
+        "call_topology_sha256": call_hash,
+        "control_flow_sha256": control_hash,
+        "relocation_shape_sha256": relocation_hash,
+        "instruction_offsets": instruction_offsets,
+    }
+
+
+def _elf_bytes_at_vma(
+    data: bytes,
+    segments: Sequence[Mapping[str, int]],
+    virtual_address: int,
+    count: int,
+) -> bytes:
+    for segment in segments:
+        start = int(segment["virtual_address"])
+        size = int(segment["file_size"])
+        if start <= virtual_address and virtual_address + count <= start + size:
+            offset = int(segment["file_offset"]) + virtual_address - start
+            return data[offset : offset + count]
+    raise RuleNotApplicable("function bytes are outside the ELF load segments")
 
 
 def _operation_bytes(
@@ -4372,31 +5516,41 @@ def _decode_x86_call(data: bytes) -> tuple[int, str]:
 
 
 def _addr2line_frames(reference_binary: Path, virtual_address: int) -> list[dict[str, Any]]:
-    try:
-        result = subprocess.run(
-            ["addr2line", "-f", "-i", "-e", str(reference_binary), hex(virtual_address)],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            env={**os.environ, "LC_ALL": "C"},
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise RuleNotApplicable(f"addr2line is unavailable: {exc}") from exc
-    rows = [line.strip() for line in result.stdout.splitlines()]
-    frames: list[dict[str, Any]] = []
-    for index in range(0, len(rows) - 1, 2):
-        location = _LOCATION.match(rows[index + 1])
-        if location is None or rows[index] == "??":
+    errors: list[str] = []
+    # GNU addr2line 2.42 can fail to decode otherwise valid GCC LTO inline
+    # ranges.  LLVM and elfutils consume the same immutable DWARF and provide
+    # an independent deterministic fallback without weakening the mapping.
+    for executable in ("addr2line", "llvm-addr2line", "eu-addr2line"):
+        try:
+            result = subprocess.run(
+                [executable, "-f", "-i", "-e", str(reference_binary), hex(virtual_address)],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=15,
+                env={**os.environ, "LC_ALL": "C"},
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            errors.append(f"{executable}: {exc}")
             continue
-        frames.append(
-            {
-                "function": rows[index],
-                "path": location.group("path"),
-                "line": int(location.group("line")),
-            }
-        )
-    return frames
+        rows = [line.strip() for line in result.stdout.splitlines()]
+        frames: list[dict[str, Any]] = []
+        for index in range(0, len(rows) - 1, 2):
+            location = _LOCATION.match(rows[index + 1])
+            if location is None or rows[index] == "??":
+                continue
+            frames.append(
+                {
+                    "function": rows[index],
+                    "path": location.group("path"),
+                    "line": int(location.group("line")),
+                }
+            )
+        if frames:
+            return frames
+    if errors and len(errors) == 3:
+        raise RuleNotApplicable("address-to-line tools are unavailable: " + "; ".join(errors))
+    return []
 
 
 def _check_manifest_reference(context: CampaignContext, certificate: Mapping[str, Any]) -> None:
@@ -4523,6 +5677,21 @@ def _load_json(path: Path) -> dict[str, Any]:
     if not isinstance(payload, Mapping):
         raise CertificateError(f"JSON artifact must be an object: {path}")
     return dict(payload)
+
+
+def _read_source_text(path: Path) -> str:
+    """Decode pinned source without assuming every comment is UTF-8.
+
+    C tokens used by the proof rules are ASCII. UTF-8 is preferred, while a
+    Latin-1 fallback preserves every byte one-to-one for older source trees
+    that contain non-UTF-8 author or copyright text.
+    """
+
+    data = Path(path).read_bytes()
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode("latin-1")
 
 
 def _contained_file(root: Path, value: Path | str, label: str) -> Path:

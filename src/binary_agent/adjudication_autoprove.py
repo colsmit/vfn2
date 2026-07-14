@@ -38,6 +38,7 @@ from binary_agent.adjudication_certificates import (
     C_SIZEOF_MEMBER_COPY_RULE,
     C_STRCHR_INPLACE_RULE,
     C_PROCESS_VARS_COPY_RULE,
+    C_PROCESS_SPLIT_LIFETIME_RULE,
     C_INITTAB_TAGS_RULE,
     C_URLDECODE_RULE,
     C_SUBSTRING_INDEX_RULE,
@@ -71,10 +72,10 @@ from binary_agent.adjudication_certificates import (
     X86_CALL_RULE,
     X86_PCODE_CALL_RULE,
     CertificateError,
+    CampaignContextIndex,
     RuleNotApplicable,
     check_certificate,
     derive_rule_proof,
-    load_campaign_context,
 )
 
 
@@ -115,7 +116,8 @@ def run_autoprove(
 
     root = Path(campaign_root).resolve()
     manifest_path = root / "frozen_manifest.json"
-    manifest = _load_json(manifest_path)
+    context_index = CampaignContextIndex.build(root)
+    manifest = context_index.manifest
     autoprove_root = root / "autoprove"
     tool_refs = _freeze_tools(root, autoprove_root)
     run_id = _tool_run_id(tool_refs)
@@ -127,11 +129,14 @@ def run_autoprove(
 
     candidates = sorted(
         _mapping_rows(manifest.get("candidates")),
-        key=lambda item: str(item.get("candidate_id") or ""),
+        key=lambda item: (
+            str(item.get("binary") or ""),
+            str(item.get("candidate_id") or ""),
+        ),
     )
     for candidate in candidates:
         candidate_id = str(candidate.get("candidate_id") or "")
-        context = load_campaign_context(root, candidate_id)
+        context = context_index.load(candidate_id)
         attempts: list[dict[str, str]] = []
         selected_rule = ""
         proof: Mapping[str, Any] | None = None
@@ -180,7 +185,7 @@ def run_autoprove(
         }
         certificate_path = run_root / "certificates" / f"{candidate_id}.json"
         _write_exact_json(certificate_path, certificate)
-        check_certificate(root, certificate_path)
+        check_certificate(root, certificate_path, _context=context)
         certificate_hash = _sha256_file(certificate_path)
         certificates[candidate_id] = {
             "path": str(certificate_path.relative_to(root)),
@@ -207,6 +212,7 @@ def run_autoprove(
             candidate_ids=residual_ids,
             direct_call_cap=direct_call_cap,
             agent_call_cap=agent_call_cap,
+            _context_index=context_index,
         )
         investigation_summary = {
             **stage.to_dict(),
@@ -214,7 +220,7 @@ def run_autoprove(
             "summary_sha256": _sha256_file(stage.summary_path),
         }
         for candidate_id, reference in stage.verified.items():
-            context = load_campaign_context(root, candidate_id)
+            context = context_index.load(candidate_id)
             verified_path = root / str(reference.get("verified_path") or "")
             verified_payload = _load_json(verified_path)
             proof = _mapping(verified_payload.get("proof"))
@@ -257,7 +263,7 @@ def run_autoprove(
             }
             certificate_path = run_root / "certificates" / f"{candidate_id}.json"
             _write_exact_json(certificate_path, certificate)
-            check_certificate(root, certificate_path)
+            check_certificate(root, certificate_path, _context=context)
             certificate_hash = _sha256_file(certificate_path)
             certificates[candidate_id] = {
                 "path": str(certificate_path.relative_to(root)),
@@ -430,12 +436,16 @@ def check_all_certificates(campaign_root: Path) -> dict[str, Any]:
     if str(summary.get("run_id") or "") != expected_run_id:
         raise CertificateError("autoprove summary run ID does not match its tools")
 
+    context_index = CampaignContextIndex.build(root)
     certificate_rows = _mapping_rows(summary.get("certificates"))
     certificate_ids = [str(item.get("candidate_id") or "") for item in certificate_rows]
     if len(certificate_ids) != len(set(certificate_ids)):
         raise CertificateError("autoprove summary contains duplicate certificate IDs")
     checked: list[dict[str, Any]] = []
-    for reference in certificate_rows:
+    for reference in sorted(
+        certificate_rows,
+        key=lambda item: context_index.sort_key(str(item.get("candidate_id") or "")),
+    ):
         certificate_path = _contained_file(
             root,
             str(reference.get("path") or ""),
@@ -443,7 +453,12 @@ def check_all_certificates(campaign_root: Path) -> dict[str, Any]:
         )
         if _sha256_file(certificate_path) != str(reference.get("sha256") or ""):
             raise CertificateError("autoprove summary certificate hash changed")
-        certificate = check_certificate(root, certificate_path)
+        candidate_id = str(reference.get("candidate_id") or "")
+        certificate = check_certificate(
+            root,
+            certificate_path,
+            _context=context_index.load(candidate_id),
+        )
         if str(certificate.get("candidate_id") or "") != str(
             reference.get("candidate_id") or ""
         ):
@@ -817,6 +832,12 @@ def _decision_for_certificate(
         rationale = (
             "The exact LOAD consumes blobmsg_data from a parser-initialized and explicitly "
             "guarded table slot, not the alleged uninitialized source local."
+        )
+    elif rule_id == C_PROCESS_SPLIT_LIFETIME_RULE:
+        rationale = (
+            "Exact source proves the first descriptor operation cannot reach the later one: "
+            "they are separated into child and parent processes, or the first path calls a "
+            "source-declared non-returning error routine."
         )
     else:
         raise CertificateError(f"no decision rendering for rule {rule_id!r}")

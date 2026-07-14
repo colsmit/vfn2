@@ -17,6 +17,28 @@ from binary_agent.adjudication import (
 from binary_agent.pipeline import CandidateState
 
 
+def test_lifetime_source_safety_requires_positive_path_refutation() -> None:
+    required, alternatives = _required_obligations(
+        vulnerability_type="double_close",
+        decision="not_bug",
+        basis="source_proves_safety",
+    )
+
+    assert required == {
+        "exact_operation",
+        "source_or_binary_binding",
+        "resource_lifetime_modeled",
+    }
+    assert alternatives == [
+        {
+            "mutually_exclusive_paths",
+            "different_resource_generation",
+            "terminating_path",
+            "ownership_cleanup",
+        }
+    ]
+
+
 def _state(candidate_id: str = "candidate-1", vulnerability_type: str = "stack_overflow") -> dict:
     pcode = "STORE" if vulnerability_type in {"stack_overflow", "out_of_bounds_write"} else "LOAD"
     return {

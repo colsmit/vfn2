@@ -353,6 +353,13 @@ class ProgramIndex:
         after_function = after.context_function_name or after.function_name
         if before_function != after_function:
             return True
+        function = self.function(before_function)
+        if function is not None and _dominating_resource_reassignment(
+            function.text,
+            before,
+            after,
+        ):
+            return False
         applicable = [
             item
             for item in barriers
@@ -369,6 +376,86 @@ class ProgramIndex:
             after.context_operation_address or after.operation_address,
             tuple(item.context_operation_address or item.operation_address for item in applicable),
         )
+
+
+def _dominating_resource_reassignment(
+    text: str,
+    before: LifecycleEvent,
+    after: LifecycleEvent,
+) -> bool:
+    """Return whether a direct assignment starts a new resource generation.
+
+    Ghidra local names are mutable storage slots.  Two releases that spell
+    their argument the same way do not refer to one generation when that slot
+    is definitely assigned between them.  Restrict the text fallback to a
+    simple identifier and require the assignment's lexical block to enclose
+    the later event; an assignment in an optional sibling branch therefore
+    cannot hide a real release-to-release path.
+    """
+
+    before_argument = _simple_parameter_reference(before.argument)
+    after_argument = _simple_parameter_reference(after.argument)
+    if not before_argument or before_argument != after_argument:
+        return False
+    before_line = before.context_line_number or before.line_number
+    after_line = after.context_line_number or after.line_number
+    if before_line <= 0 or after_line <= before_line:
+        return False
+    lines = str(text or "").splitlines()
+    header_offset = 3 if lines and lines[0].startswith("// Function:") else 0
+    before_address = before.context_operation_address or before.operation_address
+    after_address = after.context_operation_address or after.operation_address
+    # Text-derived synthetic operations already use physical file lines;
+    # exported p-code line mappings omit the three comment/header lines.
+    if ":line:" not in before_address:
+        before_line += header_offset
+    if ":line:" not in after_address:
+        after_line += header_offset
+    if after_line > len(lines):
+        return False
+
+    assignment = re.compile(
+        rf"(?<![A-Za-z0-9_*>.\]]){re.escape(before_argument)}\s*=(?!=)",
+        re.IGNORECASE,
+    )
+    stacks = _lexical_block_stacks(lines)
+    after_stack = stacks.get(after_line, ())
+    for line_number in range(before_line + 1, after_line):
+        if not assignment.search(lines[line_number - 1]):
+            continue
+        assignment_stack = stacks.get(line_number, ())
+        if after_stack[: len(assignment_stack)] != assignment_stack:
+            continue
+        between = lines[line_number: after_line - 1]
+        if any(
+            re.match(r"^\s*(?:goto\b|case\b|default\s*:|[A-Za-z_][A-Za-z0-9_]*\s*:)", line)
+            for line in between
+        ):
+            continue
+        return True
+    return False
+
+
+def _lexical_block_stacks(lines: Sequence[str]) -> dict[int, tuple[int, ...]]:
+    """Assign stable brace-stack identities to decompiled source lines."""
+
+    result: dict[int, tuple[int, ...]] = {}
+    stack: list[int] = []
+    next_block = 0
+    for line_number, line in enumerate(lines, start=1):
+        stripped = line.lstrip()
+        leading_closes = len(stripped) - len(stripped.lstrip("}"))
+        for _ in range(min(leading_closes, len(stack))):
+            stack.pop()
+        result[line_number] = tuple(stack)
+        scan = stripped[leading_closes:]
+        for character in scan:
+            if character == "{":
+                next_block += 1
+                stack.append(next_block)
+            elif character == "}" and stack:
+                stack.pop()
+    return result
 
 
 def _indexed_ubus_entry_surfaces(nodes: Sequence[FunctionNode]) -> list[EntrySurface]:
@@ -1625,10 +1712,24 @@ def _resource_alias_maps(functions: Sequence[IndexedFunction]) -> dict[str, dict
     result: dict[str, dict[str, str]] = {}
     assignment_re = re.compile(
         r"(?<![A-Za-z0-9_*>.\]])(?P<left>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:\([^;=]+\)\s*)?"
-        r"(?P<right>[A-Za-z_][A-Za-z0-9_]*|0x[0-9a-fA-F]+|\d+)\s*;"
+        r"(?P<right>[A-Za-z_][A-Za-z0-9_]*)\s*;"
+    )
+    direct_assignment_re = re.compile(
+        r"(?<![A-Za-z0-9_*>.\]])(?P<left>[A-Za-z_][A-Za-z0-9_]*)\s*=(?!=)"
     )
     for function in functions:
         parent: dict[str, str] = {}
+
+        # Decompiled temporaries are mutable storage locations, not SSA names.
+        # A whole-function union-find is only sound for variables that are
+        # assigned at most once.  In particular, joining variables through
+        # constants (or through a temporary that is later reassigned) can make
+        # an unrelated descriptor, stream, and heap allocation look like one
+        # resource generation.
+        assignment_counts: dict[str, int] = {}
+        for match in direct_assignment_re.finditer(function.text):
+            left = _normalize_resource(match.group("left"))
+            assignment_counts[left] = assignment_counts.get(left, 0) + 1
 
         def find(value: str) -> str:
             parent.setdefault(value, value)
@@ -1640,6 +1741,10 @@ def _resource_alias_maps(functions: Sequence[IndexedFunction]) -> dict[str, dict
         for match in assignment_re.finditer(function.text):
             left = _normalize_resource(match.group("left"))
             right = _normalize_resource(match.group("right"))
+            if assignment_counts.get(left, 0) != 1:
+                continue
+            if assignment_counts.get(right, 0) > 1:
+                continue
             left_root, right_root = find(left), find(right)
             # Prefer the right-hand origin so q = p resolves to p.
             if left_root != right_root:
