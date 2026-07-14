@@ -1,0 +1,206 @@
+{
+  "schema_version": 2,
+  "corpus_id": "schema2-memory-completeness",
+  "lanes": [
+    {
+      "id": "rounded-stride-vulnerable",
+      "role": "vulnerable",
+      "comparison_group": "rounded-stride",
+      "source": "rounded_stride_vulnerable.c",
+      "expected_positives": ["out_of_bounds_read"],
+      "vulnerability_types": ["out_of_bounds_read"],
+      "requires_ghidra": false,
+      "process": {"input_model": "argv", "effect_marker": "SCHEMA2_ROUNDED_STRIDE_OOB", "proof_mechanism": "rounded_stride_miscalculation"}
+    },
+    {
+      "id": "rounded-stride-fixed",
+      "role": "fixed",
+      "comparison_group": "rounded-stride",
+      "source": "rounded_stride_fixed.c",
+      "expected_negatives": ["out_of_bounds_read"],
+      "vulnerability_types": ["out_of_bounds_read"],
+      "requires_ghidra": false,
+      "process": {"input_model": "argv", "effect_marker": "SCHEMA2_ROUNDED_STRIDE_OOB", "proof_mechanism": "rounded_stride_miscalculation"}
+    },
+    {
+      "id": "reentrant-copy-vulnerable",
+      "role": "vulnerable",
+      "comparison_group": "reentrant-copy",
+      "source": "reentrant_copy_vulnerable.c",
+      "expected_positives": ["use_after_free"],
+      "vulnerability_types": ["use_after_free"],
+      "requires_ghidra": false,
+      "process": {"input_model": "argv", "effect_marker": "SCHEMA2_REENTRANT_COPY_UAF", "proof_mechanism": "reentrant_copy_invalidation"}
+    },
+    {
+      "id": "reentrant-copy-fixed",
+      "role": "fixed",
+      "comparison_group": "reentrant-copy",
+      "source": "reentrant_copy_fixed.c",
+      "expected_negatives": ["use_after_free"],
+      "vulnerability_types": ["use_after_free"],
+      "requires_ghidra": false,
+      "process": {"input_model": "argv", "effect_marker": "SCHEMA2_REENTRANT_COPY_UAF", "proof_mechanism": "reentrant_copy_invalidation"}
+    },
+    {
+      "id": "uninitialized-use-vulnerable",
+      "role": "vulnerable",
+      "comparison_group": "uninitialized-use",
+      "source": "uninitialized_use_vulnerable.c",
+      "expected_positives": ["uninitialized_memory_use"],
+      "vulnerability_types": ["uninitialized_memory_use"],
+      "requires_ghidra": false,
+      "process": {"input_model": "argv", "effect_marker": "SCHEMA2_UNINITIALIZED_USE", "proof_mechanism": "undefined_read"}
+    },
+    {
+      "id": "uninitialized-use-fixed",
+      "role": "fixed",
+      "comparison_group": "uninitialized-use",
+      "source": "uninitialized_use_fixed.c",
+      "expected_negatives": ["uninitialized_memory_use"],
+      "vulnerability_types": ["uninitialized_memory_use"],
+      "requires_ghidra": false,
+      "process": {"input_model": "argv", "effect_marker": "SCHEMA2_UNINITIALIZED_USE", "proof_mechanism": "undefined_read"}
+    },
+    {
+      "id": "overlapping-copy-vulnerable",
+      "role": "vulnerable",
+      "comparison_group": "overlapping-copy",
+      "source": "overlapping_copy_vulnerable.c",
+      "expected_positives": ["overlapping_memory_copy"],
+      "vulnerability_types": ["overlapping_memory_copy"],
+      "requires_ghidra": false,
+      "process": {"input_model": "argv", "effect_marker": "SCHEMA2_OVERLAPPING_COPY", "proof_mechanism": "overlapping_ranges"}
+    },
+    {
+      "id": "overlapping-copy-fixed",
+      "role": "fixed",
+      "comparison_group": "overlapping-copy",
+      "source": "overlapping_copy_fixed.c",
+      "expected_negatives": ["overlapping_memory_copy"],
+      "vulnerability_types": ["overlapping_memory_copy"],
+      "requires_ghidra": false,
+      "process": {"input_model": "argv", "effect_marker": "SCHEMA2_OVERLAPPING_COPY", "proof_mechanism": "overlapping_ranges"}
+    },
+    {
+      "id": "mismatched-deallocator-vulnerable",
+      "role": "vulnerable",
+      "comparison_group": "mismatched-deallocator",
+      "source": "mismatched_deallocator_vulnerable.c",
+      "expected_positives": ["mismatched_deallocator"],
+      "vulnerability_types": ["mismatched_deallocator"],
+      "requires_ghidra": false,
+      "process": {"input_model": "argv", "effect_marker": "SCHEMA2_MISMATCHED_DEALLOCATOR", "proof_mechanism": "allocator_family_mismatch"}
+    },
+    {
+      "id": "mismatched-deallocator-fixed",
+      "role": "fixed",
+      "comparison_group": "mismatched-deallocator",
+      "source": "mismatched_deallocator_fixed.c",
+      "expected_negatives": ["mismatched_deallocator"],
+      "vulnerability_types": ["mismatched_deallocator"],
+      "requires_ghidra": false,
+      "process": {"input_model": "argv", "effect_marker": "SCHEMA2_MISMATCHED_DEALLOCATOR", "proof_mechanism": "allocator_family_mismatch"}
+    },
+    {
+      "id": "double-close-vulnerable",
+      "role": "vulnerable",
+      "comparison_group": "double-close",
+      "source": "double_close_vulnerable.c",
+      "expected_positives": ["double_close"],
+      "vulnerability_types": ["double_close"],
+      "requires_ghidra": false,
+      "process": {"input_model": "argv", "effect_marker": "SCHEMA2_DOUBLE_CLOSE", "proof_mechanism": "duplicate_handle_close"}
+    },
+    {
+      "id": "double-close-fixed",
+      "role": "fixed",
+      "comparison_group": "double-close",
+      "source": "double_close_fixed.c",
+      "expected_negatives": ["double_close"],
+      "vulnerability_types": ["double_close"],
+      "requires_ghidra": false,
+      "process": {"input_model": "argv", "effect_marker": "SCHEMA2_DOUBLE_CLOSE", "proof_mechanism": "duplicate_handle_close"}
+    },
+    {
+      "id": "use-after-close-vulnerable",
+      "role": "vulnerable",
+      "comparison_group": "use-after-close",
+      "source": "use_after_close_vulnerable.c",
+      "expected_positives": ["use_after_close"],
+      "vulnerability_types": ["use_after_close"],
+      "requires_ghidra": false,
+      "process": {"input_model": "argv", "effect_marker": "SCHEMA2_USE_AFTER_CLOSE", "proof_mechanism": "handle_use_after_close"}
+    },
+    {
+      "id": "use-after-close-fixed",
+      "role": "fixed",
+      "comparison_group": "use-after-close",
+      "source": "use_after_close_fixed.c",
+      "expected_negatives": ["use_after_close"],
+      "vulnerability_types": ["use_after_close"],
+      "requires_ghidra": false,
+      "process": {"input_model": "argv", "effect_marker": "SCHEMA2_USE_AFTER_CLOSE", "proof_mechanism": "handle_use_after_close"}
+    },
+    {
+      "id": "argument-injection-vulnerable",
+      "role": "vulnerable",
+      "comparison_group": "argument-injection",
+      "source": "argument_injection_vulnerable.c",
+      "expected_positives": ["argument_injection"],
+      "vulnerability_types": ["argument_injection"],
+      "requires_ghidra": false,
+      "process": {"input_model": "argv", "argv_values": ["ARGUMENT_EFFECT"], "effect_marker": "ARGUMENT_EFFECT", "proof_mechanism": "process_argument_injection"}
+    },
+    {
+      "id": "argument-injection-fixed",
+      "role": "fixed",
+      "comparison_group": "argument-injection",
+      "source": "argument_injection_fixed.c",
+      "expected_negatives": ["argument_injection"],
+      "vulnerability_types": ["argument_injection"],
+      "requires_ghidra": false,
+      "process": {"input_model": "argv", "argv_values": ["ARGUMENT_EFFECT"], "effect_marker": "ARGUMENT_EFFECT", "proof_mechanism": "process_argument_injection"}
+    },
+    {
+      "id": "code-injection-vulnerable",
+      "role": "vulnerable",
+      "comparison_group": "code-injection",
+      "source": "code_injection_vulnerable.c",
+      "expected_positives": ["code_injection"],
+      "vulnerability_types": ["code_injection"],
+      "requires_ghidra": false,
+      "process": {"input_model": "argv", "argv_values": ["CODE_EFFECT"], "effect_marker": "CODE_EFFECT", "proof_mechanism": "dynamic_code_evaluation"}
+    },
+    {
+      "id": "code-injection-fixed",
+      "role": "fixed",
+      "comparison_group": "code-injection",
+      "source": "code_injection_fixed.c",
+      "expected_negatives": ["code_injection"],
+      "vulnerability_types": ["code_injection"],
+      "requires_ghidra": false,
+      "process": {"input_model": "argv", "argv_values": ["CODE_EFFECT"], "effect_marker": "CODE_EFFECT", "proof_mechanism": "dynamic_code_evaluation"}
+    },
+    {
+      "id": "ssrf-vulnerable",
+      "role": "vulnerable",
+      "comparison_group": "ssrf",
+      "source": "ssrf_vulnerable.c",
+      "expected_positives": ["server_side_request_forgery"],
+      "vulnerability_types": ["server_side_request_forgery"],
+      "requires_ghidra": false,
+      "process": {"input_model": "argv", "argv_values": ["{listener_port}"], "effect_observation": "tcp_connection", "proof_mechanism": "attacker_selected_outbound_target"}
+    },
+    {
+      "id": "ssrf-fixed",
+      "role": "fixed",
+      "comparison_group": "ssrf",
+      "source": "ssrf_fixed.c",
+      "expected_negatives": ["server_side_request_forgery"],
+      "vulnerability_types": ["server_side_request_forgery"],
+      "requires_ghidra": false,
+      "process": {"input_model": "argv", "argv_values": ["{listener_port}"], "effect_observation": "tcp_connection", "proof_mechanism": "attacker_selected_outbound_target"}
+    }
+  ]
+}

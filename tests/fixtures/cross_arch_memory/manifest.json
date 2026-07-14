@@ -1,0 +1,9 @@
+{
+  "schema_version": 2,
+  "cases": [
+    {"id": "aarch64_vulnerable", "architecture": "aarch64", "source": "aarch64_vulnerable.S", "object_size": 8, "expected_out_of_bounds": true},
+    {"id": "aarch64_fixed", "architecture": "aarch64", "source": "aarch64_fixed.S", "object_size": 8, "expected_out_of_bounds": false},
+    {"id": "arm_vulnerable", "architecture": "arm", "source": "arm_vulnerable.S", "object_size": 8, "expected_out_of_bounds": true},
+    {"id": "arm_fixed", "architecture": "arm", "source": "arm_fixed.S", "object_size": 8, "expected_out_of_bounds": false}
+  ]
+}

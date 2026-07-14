@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "campaign_id": "openwrt-24.10.4-x86-64-untouched-v1",
+  "images": [
+    {
+      "id": "openwrt-24.10.4-x86-64-rootfs",
+      "url": "https://downloads.openwrt.org/releases/24.10.4/targets/x86/64/openwrt-24.10.4-x86-64-rootfs.tar.gz",
+      "sha256": "e7f8ab84eef55c7eb23492de7b0517dbc23fbedaa4abbb680fe64720c309dc03",
+      "archive_type": "tar.gz",
+      "binary_regex": "^(bin/(busybox|ubus|uci|uclient-fetch)|sbin/(rpcd|netifd|procd))$",
+      "license": "OpenWrt project source licenses; image contains multiple packages",
+      "redistribution_note": "Public release image analyzed in place for research; generated run artifacts are not committed."
+    }
+  ]
+}

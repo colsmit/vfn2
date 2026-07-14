@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=65.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "binary-scan-agent"
+version = "0.1.0"
+description = "Research pipeline for proof-gated binary vulnerability analysis."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "python-dotenv>=1.0.1"
+]
+
+[project.optional-dependencies]
+concolic = [
+    "angr>=9.2.135",
+    "capstone>=5.0.1",
+    "pyelftools>=0.31",
+]
+dev = [
+    "pytest>=7.4",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.package-data]
+binary_agent = ["data/*.json"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,18 @@
+{
+  "schema_version": 2,
+  "corpus_id": "schema2-registered-static",
+  "lanes": [
+    {"id": "default-credential-vulnerable", "role": "vulnerable", "comparison_group": "default-credential", "source": "default_credential_vulnerable.c", "expected_positives": ["default_credential"], "vulnerability_types": ["default_credential"], "requires_ghidra": true},
+    {"id": "default-credential-fixed", "role": "fixed", "comparison_group": "default-credential", "source": "default_credential_fixed.c", "expected_negatives": ["default_credential"], "vulnerability_types": ["default_credential"], "requires_ghidra": true},
+    {"id": "embedded-private-key-vulnerable", "role": "vulnerable", "comparison_group": "embedded-private-key", "source": "embedded_private_key_vulnerable.c", "expected_positives": ["embedded_private_key"], "vulnerability_types": ["embedded_private_key"], "requires_ghidra": true},
+    {"id": "embedded-private-key-fixed", "role": "fixed", "comparison_group": "embedded-private-key", "source": "embedded_private_key_fixed.c", "expected_negatives": ["embedded_private_key"], "vulnerability_types": ["embedded_private_key"], "requires_ghidra": true},
+    {"id": "embedded-api-token-vulnerable", "role": "vulnerable", "comparison_group": "embedded-api-token", "source": "embedded_api_token_vulnerable.c", "expected_positives": ["embedded_api_token"], "vulnerability_types": ["embedded_api_token"], "requires_ghidra": true},
+    {"id": "embedded-api-token-fixed", "role": "fixed", "comparison_group": "embedded-api-token", "source": "embedded_api_token_fixed.c", "expected_negatives": ["embedded_api_token"], "vulnerability_types": ["embedded_api_token"], "requires_ghidra": true},
+    {"id": "weak-cryptography-vulnerable", "role": "vulnerable", "comparison_group": "weak-cryptography", "source": "weak_cryptography_vulnerable.c", "expected_positives": ["weak_cryptography"], "vulnerability_types": ["weak_cryptography"], "requires_ghidra": true},
+    {"id": "weak-cryptography-fixed", "role": "fixed", "comparison_group": "weak-cryptography", "source": "weak_cryptography_fixed.c", "expected_negatives": ["weak_cryptography"], "vulnerability_types": ["weak_cryptography"], "requires_ghidra": true},
+    {"id": "insecure-randomness-vulnerable", "role": "vulnerable", "comparison_group": "insecure-randomness", "source": "insecure_randomness_vulnerable.c", "expected_positives": ["insecure_randomness"], "vulnerability_types": ["insecure_randomness"], "requires_ghidra": true},
+    {"id": "insecure-randomness-fixed", "role": "fixed", "comparison_group": "insecure-randomness", "source": "insecure_randomness_fixed.c", "expected_negatives": ["insecure_randomness"], "vulnerability_types": ["insecure_randomness"], "requires_ghidra": true},
+    {"id": "disabled-certificate-validation-vulnerable", "role": "vulnerable", "comparison_group": "disabled-certificate-validation", "source": "disabled_certificate_validation_vulnerable.c", "expected_positives": ["disabled_certificate_validation"], "vulnerability_types": ["disabled_certificate_validation"], "requires_ghidra": true},
+    {"id": "disabled-certificate-validation-fixed", "role": "fixed", "comparison_group": "disabled-certificate-validation", "source": "disabled_certificate_validation_fixed.c", "expected_negatives": ["disabled_certificate_validation"], "vulnerability_types": ["disabled_certificate_validation"], "requires_ghidra": true}
+  ]
+}

@@ -1,0 +1,91 @@
+{
+  "schema_version": 2,
+  "corpus_id": "schema2-registered-semantic",
+  "proof": {"timeout_seconds": 15, "dynamic_max_steps": 30000},
+  "lanes": [
+    {
+      "id": "argument-injection-vulnerable", "role": "vulnerable", "comparison_group": "argument-injection",
+      "source": "argument_injection_vulnerable.c", "expected_positives": ["argument_injection"], "vulnerability_types": ["argument_injection"],
+      "requires_ghidra": true,
+      "process": {"input_model": "argv", "argv_values": ["ATTACKER_CHILD_ARGUMENT"], "env": {"PROOF_FILE": "{candidate_dir}/argv.json"}, "proof_file": "argv.json", "proof_oracle": {"proof_file": "argv.json"}}
+    },
+    {
+      "id": "argument-injection-fixed", "role": "fixed", "comparison_group": "argument-injection",
+      "source": "argument_injection_fixed.c", "expected_negatives": ["argument_injection"], "vulnerability_types": ["argument_injection"],
+      "requires_ghidra": true,
+      "process": {"input_model": "argv", "argv_values": ["ATTACKER_CHILD_ARGUMENT"], "env": {"PROOF_FILE": "{candidate_dir}/argv.json"}, "proof_file": "argv.json", "proof_oracle": {"proof_file": "argv.json"}}
+    },
+    {
+      "id": "code-injection-vulnerable", "role": "vulnerable", "comparison_group": "code-injection",
+      "source": "code_injection_vulnerable.c", "expected_positives": ["code_injection"], "vulnerability_types": ["code_injection"],
+      "requires_ghidra": true,
+      "process": {"input_model": "argv", "argv_values": ["WRITE:ATTACKER_INTERPRETER_ACTION"], "env": {"PROOF_FILE": "{candidate_dir}/code.json"}, "proof_file": "code.json", "proof_oracle": {"proof_file": "code.json"}}
+    },
+    {
+      "id": "code-injection-fixed", "role": "fixed", "comparison_group": "code-injection",
+      "source": "code_injection_fixed.c", "expected_negatives": ["code_injection"], "vulnerability_types": ["code_injection"],
+      "requires_ghidra": true,
+      "process": {"input_model": "argv", "argv_values": ["WRITE:ATTACKER_INTERPRETER_ACTION"], "env": {"PROOF_FILE": "{candidate_dir}/code.json"}, "proof_file": "code.json", "proof_oracle": {"proof_file": "code.json"}}
+    },
+    {
+      "id": "ssrf-vulnerable", "role": "vulnerable", "comparison_group": "ssrf",
+      "source": "ssrf_vulnerable.c", "expected_positives": ["server_side_request_forgery"], "vulnerability_types": ["server_side_request_forgery"],
+      "requires_ghidra": true,
+      "process": {"input_model": "argv", "argv_values": ["{listener_port}"], "outbound_listener": {"host": "127.0.0.1", "port": 0}, "proof_oracle": {"outbound_listener": {"host": "127.0.0.1", "port": 0}}}
+    },
+    {
+      "id": "ssrf-fixed", "role": "fixed", "comparison_group": "ssrf",
+      "source": "ssrf_fixed.c", "expected_negatives": ["server_side_request_forgery"], "vulnerability_types": ["server_side_request_forgery"],
+      "requires_ghidra": true,
+      "process": {"input_model": "argv", "argv_values": ["{listener_port}"], "outbound_listener": {"host": "127.0.0.1", "port": 0}, "proof_oracle": {"outbound_listener": {"host": "127.0.0.1", "port": 0}}}
+    },
+    {
+      "id": "sql-injection-vulnerable", "role": "vulnerable", "comparison_group": "sql-injection",
+      "source": "sql_injection_vulnerable.c", "expected_positives": ["sql_injection"], "vulnerability_types": ["sql_injection"],
+      "requires_ghidra": true,
+      "process": {"input_model": "argv", "argv_values": ["CREATE TABLE attacker_created(value TEXT); INSERT INTO attacker_created VALUES('owned');"], "env": {"DATABASE_PATH": "{candidate_dir}/replay.db", "PYTHON_BIN": "/usr/bin/python3"}, "database_path": "replay.db", "proof_oracle": {"database_path": "replay.db", "created_table": "attacker_created"}}
+    },
+    {
+      "id": "sql-injection-fixed", "role": "fixed", "comparison_group": "sql-injection",
+      "source": "sql_injection_fixed.c", "expected_negatives": ["sql_injection"], "vulnerability_types": ["sql_injection"],
+      "requires_ghidra": true,
+      "process": {"input_model": "argv", "argv_values": ["CREATE TABLE attacker_created(value TEXT); INSERT INTO attacker_created VALUES('owned');"], "env": {"DATABASE_PATH": "{candidate_dir}/replay.db", "PYTHON_BIN": "/usr/bin/python3"}, "database_path": "replay.db", "proof_oracle": {"database_path": "replay.db", "created_table": "attacker_created"}}
+    },
+    {
+      "id": "http-header-injection-vulnerable", "role": "vulnerable", "comparison_group": "http-header-injection",
+      "source": "http_header_injection_vulnerable.c", "expected_positives": ["http_header_injection"], "vulnerability_types": ["http_header_injection"],
+      "requires_ghidra": true,
+      "process": {"input_model": "argv", "argv_values": ["safe\r\nX-Injected: yes"], "proof_oracle": {"injected_header": "X-Injected"}}
+    },
+    {
+      "id": "http-header-injection-fixed", "role": "fixed", "comparison_group": "http-header-injection",
+      "source": "http_header_injection_fixed.c", "expected_negatives": ["http_header_injection"], "vulnerability_types": ["http_header_injection"],
+      "requires_ghidra": true,
+      "process": {"input_model": "argv", "argv_values": ["safe\r\nX-Injected: yes"], "proof_oracle": {"injected_header": "X-Injected"}}
+    },
+    {
+      "id": "log-injection-vulnerable", "role": "vulnerable", "comparison_group": "log-injection",
+      "source": "log_injection_vulnerable.c", "expected_positives": ["log_injection"], "vulnerability_types": ["log_injection"],
+      "requires_ghidra": true,
+      "process": {"input_model": "argv", "argv_values": ["safe\nFORGED_RECORD:admin"], "env": {"LOG_PATH": "{candidate_dir}/events.log"}, "log_path": "events.log", "proof_oracle": {"log_path": "events.log", "forged_record": "FORGED_RECORD:admin"}}
+    },
+    {
+      "id": "log-injection-fixed", "role": "fixed", "comparison_group": "log-injection",
+      "source": "log_injection_fixed.c", "expected_negatives": ["log_injection"], "vulnerability_types": ["log_injection"],
+      "requires_ghidra": true,
+      "process": {"input_model": "argv", "argv_values": ["safe\nFORGED_RECORD:admin"], "env": {"LOG_PATH": "{candidate_dir}/events.log"}, "log_path": "events.log", "proof_oracle": {"log_path": "events.log", "forged_record": "FORGED_RECORD:admin"}}
+    },
+    {
+      "id": "open-redirect-vulnerable", "role": "vulnerable", "comparison_group": "open-redirect",
+      "source": "open_redirect_vulnerable.c", "expected_positives": ["open_redirect"], "vulnerability_types": ["open_redirect"],
+      "requires_ghidra": true,
+      "process": {"input_model": "argv", "argv_values": ["https://attacker.invalid/landing"], "proof_oracle": {"external_url": "https://attacker.invalid/landing"}}
+    },
+    {
+      "id": "open-redirect-fixed", "role": "fixed", "comparison_group": "open-redirect",
+      "source": "open_redirect_fixed.c", "expected_negatives": ["open_redirect"], "vulnerability_types": ["open_redirect"],
+      "requires_ghidra": true,
+      "process": {"input_model": "argv", "argv_values": ["https://attacker.invalid/landing"], "proof_oracle": {"external_url": "https://attacker.invalid/landing"}}
+    }
+  ]
+}

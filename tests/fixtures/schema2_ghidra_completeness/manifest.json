@@ -1,0 +1,111 @@
+{
+  "schema_version": 2,
+  "corpus_id": "schema2-ghidra-existing-class-completeness",
+  "proof": {"timeout_seconds": 20, "dynamic_max_steps": 30000},
+  "lanes": [
+    {
+      "id": "uninitialized-use-vulnerable",
+      "role": "vulnerable",
+      "comparison_group": "uninitialized-use",
+      "source": "../schema2_completeness/uninitialized_use_vulnerable.c",
+      "expected_positives": ["uninitialized_memory_use"],
+      "vulnerability_types": ["uninitialized_memory_use"],
+      "requires_ghidra": true,
+      "process": {"input_model": "argv", "argv_values": ["program"]}
+    },
+    {
+      "id": "uninitialized-use-fixed",
+      "role": "fixed",
+      "comparison_group": "uninitialized-use",
+      "source": "../schema2_completeness/uninitialized_use_fixed.c",
+      "expected_negatives": ["uninitialized_memory_use"],
+      "vulnerability_types": ["uninitialized_memory_use"],
+      "requires_ghidra": true,
+      "process": {"input_model": "argv", "argv_values": ["program"]}
+    },
+    {
+      "id": "overlapping-copy-vulnerable",
+      "role": "vulnerable",
+      "comparison_group": "overlapping-copy",
+      "source": "../schema2_completeness/overlapping_copy_vulnerable.c",
+      "compiler_flags": ["-fno-builtin-memcpy", "-fno-stack-protector"],
+      "expected_positives": ["overlapping_memory_copy"],
+      "vulnerability_types": ["overlapping_memory_copy"],
+      "requires_ghidra": true,
+      "process": {"input_model": "argv", "argv_values": ["program"]}
+    },
+    {
+      "id": "overlapping-copy-fixed",
+      "role": "fixed",
+      "comparison_group": "overlapping-copy",
+      "source": "../schema2_completeness/overlapping_copy_fixed.c",
+      "compiler_flags": ["-fno-builtin-memcpy", "-fno-stack-protector"],
+      "expected_negatives": ["overlapping_memory_copy"],
+      "vulnerability_types": ["overlapping_memory_copy"],
+      "requires_ghidra": true,
+      "process": {"input_model": "argv", "argv_values": ["program"]}
+    },
+    {
+      "id": "mismatched-deallocator-vulnerable",
+      "role": "vulnerable",
+      "comparison_group": "mismatched-deallocator",
+      "source": "mismatched_deallocator_vulnerable.cpp",
+      "compiler": "c++",
+      "expected_positives": ["mismatched_deallocator"],
+      "vulnerability_types": ["mismatched_deallocator"],
+      "requires_ghidra": true,
+      "process": {"input_model": "argv", "argv_values": ["program"]}
+    },
+    {
+      "id": "mismatched-deallocator-fixed",
+      "role": "fixed",
+      "comparison_group": "mismatched-deallocator",
+      "source": "mismatched_deallocator_fixed.cpp",
+      "compiler": "c++",
+      "expected_negatives": ["mismatched_deallocator"],
+      "vulnerability_types": ["mismatched_deallocator"],
+      "requires_ghidra": true,
+      "process": {"input_model": "argv", "argv_values": ["program"]}
+    },
+    {
+      "id": "double-close-vulnerable",
+      "role": "vulnerable",
+      "comparison_group": "double-close",
+      "source": "../schema2_completeness/double_close_vulnerable.c",
+      "expected_positives": ["double_close"],
+      "vulnerability_types": ["double_close"],
+      "requires_ghidra": true,
+      "process": {"input_model": "argv", "argv_values": ["program"]}
+    },
+    {
+      "id": "double-close-fixed",
+      "role": "fixed",
+      "comparison_group": "double-close",
+      "source": "../schema2_completeness/double_close_fixed.c",
+      "expected_negatives": ["double_close"],
+      "vulnerability_types": ["double_close"],
+      "requires_ghidra": true,
+      "process": {"input_model": "argv", "argv_values": ["program"]}
+    },
+    {
+      "id": "use-after-close-vulnerable",
+      "role": "vulnerable",
+      "comparison_group": "use-after-close",
+      "source": "../schema2_completeness/use_after_close_vulnerable.c",
+      "expected_positives": ["use_after_close"],
+      "vulnerability_types": ["use_after_close"],
+      "requires_ghidra": true,
+      "process": {"input_model": "argv", "argv_values": ["program"]}
+    },
+    {
+      "id": "use-after-close-fixed",
+      "role": "fixed",
+      "comparison_group": "use-after-close",
+      "source": "../schema2_completeness/use_after_close_fixed.c",
+      "expected_negatives": ["use_after_close"],
+      "vulnerability_types": ["use_after_close"],
+      "requires_ghidra": true,
+      "process": {"input_model": "argv", "argv_values": ["program"]}
+    }
+  ]
+}

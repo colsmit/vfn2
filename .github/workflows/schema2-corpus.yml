@@ -1,0 +1,65 @@
+name: Schema-v2 corpus
+
+on:
+  pull_request:
+  push:
+  schedule:
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      full_corpus_manifest:
+        description: Absolute schema-v2 manifest path on the full-corpus runner
+        required: false
+        type: string
+
+jobs:
+  lightweight:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: python -m pip install -e '.[dev]'
+      - run: PYTHONDONTWRITEBYTECODE=1 pytest -q tests/test_corpus_runner.py tests/test_backend_contracts.py
+      - run: >-
+          PYTHONDONTWRITEBYTECODE=1 python -m binary_agent.cli.run_corpus
+          tests/fixtures/schema2_corpus/manifest.json
+          --output-dir /tmp/vulnfinder2-schema2-ci
+          --mode lightweight
+
+  full:
+    if: >-
+      (github.event_name == 'schedule' && vars.VULNFINDER_FULL_CORPUS_MANIFEST != '') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.full_corpus_manifest != '' || vars.VULNFINDER_FULL_CORPUS_MANIFEST != ''))
+    runs-on: [self-hosted, schema2-full]
+    timeout-minutes: 180
+    env:
+      GHIDRA_INSTALL_DIR: ${{ vars.GHIDRA_INSTALL_DIR }}
+      FULL_CORPUS_MANIFEST: ${{ inputs.full_corpus_manifest || vars.VULNFINDER_FULL_CORPUS_MANIFEST }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: python -m pip install -e '.[dev]'
+      - name: Validate configured tools and corpus
+        run: |
+          test -d "$GHIDRA_INSTALL_DIR"
+          test -f "$FULL_CORPUS_MANIFEST"
+      - run: >-
+          PYTHONDONTWRITEBYTECODE=1 python -m binary_agent.cli.run_corpus
+          "$FULL_CORPUS_MANIFEST"
+          --output-dir /tmp/vulnfinder2-schema2-full
+          --mode full
+          --overwrite
+
+  full-not-configured:
+    if: >-
+      (github.event_name == 'schedule' && vars.VULNFINDER_FULL_CORPUS_MANIFEST == '') ||
+      (github.event_name == 'workflow_dispatch' && inputs.full_corpus_manifest == '' && vars.VULNFINDER_FULL_CORPUS_MANIFEST == '')
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Full corpus skipped because VULNFINDER_FULL_CORPUS_MANIFEST is not configured."

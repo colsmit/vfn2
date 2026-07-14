@@ -1,0 +1,11 @@
+{
+  "schema_version": 2,
+  "corpus_id": "schema2-registered-memory",
+  "proof": {"timeout_seconds": 15, "dynamic_max_steps": 30000},
+  "lanes": [
+    {"id": "null-pointer-dereference-vulnerable", "role": "vulnerable", "comparison_group": "null-pointer-dereference", "source": "null_pointer_dereference_vulnerable.c", "expected_positives": ["null_pointer_dereference"], "vulnerability_types": ["null_pointer_dereference"], "requires_ghidra": true, "process": {"input_model": "argv", "argv_values": ["memory-proof"]}},
+    {"id": "null-pointer-dereference-fixed", "role": "fixed", "comparison_group": "null-pointer-dereference", "source": "null_pointer_dereference_fixed.c", "expected_negatives": ["null_pointer_dereference"], "vulnerability_types": ["null_pointer_dereference"], "requires_ghidra": true, "process": {"input_model": "argv", "argv_values": ["memory-proof"]}},
+    {"id": "memory-leak-vulnerable", "role": "vulnerable", "comparison_group": "memory-leak", "source": "memory_leak_vulnerable.c", "expected_positives": ["memory_leak"], "vulnerability_types": ["memory_leak"], "requires_ghidra": true, "process": {"input_model": "argv", "argv_values": ["memory-proof"]}},
+    {"id": "memory-leak-fixed", "role": "fixed", "comparison_group": "memory-leak", "source": "memory_leak_fixed.c", "expected_negatives": ["memory_leak"], "vulnerability_types": ["memory_leak"], "requires_ghidra": true, "process": {"input_model": "argv", "argv_values": ["memory-proof"]}}
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "schema_version": 2,
+  "corpus_id": "schema2-lightweight-ci",
+  "proof": {
+    "timeout_seconds": 10,
+    "dynamic_max_steps": 10000
+  },
+  "lanes": [
+    {
+      "id": "semantic-command-vulnerable",
+      "role": "vulnerable",
+      "comparison_group": "semantic-command",
+      "source": "semantic_command_vulnerable.c",
+      "expected_positives": ["command_injection"],
+      "vulnerability_types": ["command_injection"],
+      "requires_ghidra": false,
+      "process": {
+        "input_model": "argv",
+        "argv_values": ["printf SCHEMA2_SEMANTIC_EFFECT"],
+        "effect_marker": "SCHEMA2_SEMANTIC_EFFECT"
+      }
+    },
+    {
+      "id": "semantic-command-fixed",
+      "role": "fixed",
+      "comparison_group": "semantic-command",
+      "source": "semantic_command_fixed.c",
+      "expected_negatives": ["command_injection"],
+      "vulnerability_types": ["command_injection"],
+      "requires_ghidra": false,
+      "process": {
+        "input_model": "argv",
+        "argv_values": ["printf SCHEMA2_SEMANTIC_EFFECT"],
+        "effect_marker": "SCHEMA2_SEMANTIC_EFFECT"
+      }
+    },
+    {
+      "id": "static-token-vulnerable",
+      "role": "vulnerable",
+      "comparison_group": "static-token",
+      "source": "static_token_vulnerable.c",
+      "expected_positives": ["embedded_api_token"],
+      "vulnerability_types": ["embedded_api_token"],
+      "requires_ghidra": false
+    },
+    {
+      "id": "static-token-fixed",
+      "role": "fixed",
+      "comparison_group": "static-token",
+      "source": "static_token_fixed.c",
+      "expected_negatives": ["embedded_api_token"],
+      "vulnerability_types": ["embedded_api_token"],
+      "requires_ghidra": false
+    }
+  ]
+}

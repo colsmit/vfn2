@@ -1,0 +1,119 @@
+{
+  "schema_version": 1,
+  "corpus_id": "juliet-memory-holdout-v1",
+  "upstream": {
+    "commit": "f88433e3443648a17671398797a04ea1f8e1a274",
+    "kind": "synthetic_multi_family_holdout",
+    "repository": "https://github.com/arichardson/juliet-test-suite-c.git"
+  },
+  "cases": [
+    {
+      "id": "cwe121-memcpy-vulnerable",
+      "lane": "vulnerable",
+      "comparison_group": "cwe121-memcpy",
+      "vulnerability_type": "stack_overflow",
+      "source": "testcases/CWE121_Stack_Based_Buffer_Overflow/s01/CWE121_Stack_Based_Buffer_Overflow__char_type_overrun_memcpy_01.c",
+      "compile": {"defines": ["INCLUDEMAIN", "OMITGOOD"], "include_dirs": ["testcasesupport"], "support_sources": ["testcasesupport/io.c"], "flags": ["-O1", "-fno-inline", "-fno-stack-protector", "-fno-builtin", "-fPIE", "-pie", "-Wl,-z,relro,-z,now"]},
+      "process": {"input_model": "argv", "argv_values": ["program"]}
+    },
+    {
+      "id": "cwe121-memcpy-fixed",
+      "lane": "fixed",
+      "comparison_group": "cwe121-memcpy",
+      "vulnerability_type": "stack_overflow",
+      "source": "testcases/CWE121_Stack_Based_Buffer_Overflow/s01/CWE121_Stack_Based_Buffer_Overflow__char_type_overrun_memcpy_01.c",
+      "compile": {"defines": ["INCLUDEMAIN", "OMITBAD"], "include_dirs": ["testcasesupport"], "support_sources": ["testcasesupport/io.c"], "flags": ["-O1", "-fno-inline", "-fno-stack-protector", "-fno-builtin", "-fPIE", "-pie", "-Wl,-z,relro,-z,now"]},
+      "process": {"input_model": "argv", "argv_values": ["program"]}
+    },
+    {
+      "id": "cwe122-memcpy-vulnerable",
+      "lane": "vulnerable",
+      "comparison_group": "cwe122-memcpy",
+      "vulnerability_type": "heap_overflow",
+      "source": "testcases/CWE122_Heap_Based_Buffer_Overflow/s01/CWE122_Heap_Based_Buffer_Overflow__char_type_overrun_memcpy_01.c",
+      "compile": {"defines": ["INCLUDEMAIN", "OMITGOOD"], "include_dirs": ["testcasesupport"], "support_sources": ["testcasesupport/io.c"], "flags": ["-O1", "-fno-inline", "-fno-stack-protector", "-fno-builtin", "-fPIE", "-pie", "-Wl,-z,relro,-z,now"]},
+      "process": {"input_model": "argv", "argv_values": ["program"]}
+    },
+    {
+      "id": "cwe122-memcpy-fixed",
+      "lane": "fixed",
+      "comparison_group": "cwe122-memcpy",
+      "vulnerability_type": "heap_overflow",
+      "source": "testcases/CWE122_Heap_Based_Buffer_Overflow/s01/CWE122_Heap_Based_Buffer_Overflow__char_type_overrun_memcpy_01.c",
+      "compile": {"defines": ["INCLUDEMAIN", "OMITBAD"], "include_dirs": ["testcasesupport"], "support_sources": ["testcasesupport/io.c"], "flags": ["-O1", "-fno-inline", "-fno-stack-protector", "-fno-builtin", "-fPIE", "-pie", "-Wl,-z,relro,-z,now"]},
+      "process": {"input_model": "argv", "argv_values": ["program"]}
+    },
+    {
+      "id": "cwe401-malloc-vulnerable",
+      "lane": "vulnerable",
+      "comparison_group": "cwe401-malloc",
+      "vulnerability_type": "memory_leak",
+      "source": "testcases/CWE401_Memory_Leak/s01/CWE401_Memory_Leak__char_malloc_01.c",
+      "compile": {"defines": ["INCLUDEMAIN", "OMITGOOD"], "include_dirs": ["testcasesupport"], "support_sources": ["testcasesupport/io.c"], "flags": ["-O1", "-fno-inline", "-fno-builtin", "-fPIE", "-pie", "-Wl,-z,relro,-z,now"]},
+      "process": {"input_model": "argv", "argv_values": ["program"]}
+    },
+    {
+      "id": "cwe401-malloc-fixed",
+      "lane": "fixed",
+      "comparison_group": "cwe401-malloc",
+      "vulnerability_type": "memory_leak",
+      "source": "testcases/CWE401_Memory_Leak/s01/CWE401_Memory_Leak__char_malloc_01.c",
+      "compile": {"defines": ["INCLUDEMAIN", "OMITBAD"], "include_dirs": ["testcasesupport"], "support_sources": ["testcasesupport/io.c"], "flags": ["-O1", "-fno-inline", "-fno-builtin", "-fPIE", "-pie", "-Wl,-z,relro,-z,now"]},
+      "process": {"input_model": "argv", "argv_values": ["program"]}
+    },
+    {
+      "id": "cwe415-free-vulnerable",
+      "lane": "vulnerable",
+      "comparison_group": "cwe415-free",
+      "vulnerability_type": "double_free",
+      "source": "testcases/CWE415_Double_Free/s01/CWE415_Double_Free__malloc_free_char_01.c",
+      "compile": {"defines": ["INCLUDEMAIN", "OMITGOOD"], "include_dirs": ["testcasesupport"], "support_sources": ["testcasesupport/io.c"], "flags": ["-O1", "-fno-inline", "-fno-builtin", "-fPIE", "-pie", "-Wl,-z,relro,-z,now"]},
+      "process": {"input_model": "argv", "argv_values": ["program"]}
+    },
+    {
+      "id": "cwe415-free-fixed",
+      "lane": "fixed",
+      "comparison_group": "cwe415-free",
+      "vulnerability_type": "double_free",
+      "source": "testcases/CWE415_Double_Free/s01/CWE415_Double_Free__malloc_free_char_01.c",
+      "compile": {"defines": ["INCLUDEMAIN", "OMITBAD"], "include_dirs": ["testcasesupport"], "support_sources": ["testcasesupport/io.c"], "flags": ["-O1", "-fno-inline", "-fno-builtin", "-fPIE", "-pie", "-Wl,-z,relro,-z,now"]},
+      "process": {"input_model": "argv", "argv_values": ["program"]}
+    },
+    {
+      "id": "cwe416-free-vulnerable",
+      "lane": "vulnerable",
+      "comparison_group": "cwe416-free",
+      "vulnerability_type": "use_after_free",
+      "source": "testcases/CWE416_Use_After_Free/CWE416_Use_After_Free__malloc_free_char_01.c",
+      "compile": {"defines": ["INCLUDEMAIN", "OMITGOOD"], "include_dirs": ["testcasesupport"], "support_sources": ["testcasesupport/io.c"], "flags": ["-O1", "-fno-inline", "-fno-builtin", "-fPIE", "-pie", "-Wl,-z,relro,-z,now"]},
+      "process": {"input_model": "argv", "argv_values": ["program"]}
+    },
+    {
+      "id": "cwe416-free-fixed",
+      "lane": "fixed",
+      "comparison_group": "cwe416-free",
+      "vulnerability_type": "use_after_free",
+      "source": "testcases/CWE416_Use_After_Free/CWE416_Use_After_Free__malloc_free_char_01.c",
+      "compile": {"defines": ["INCLUDEMAIN", "OMITBAD"], "include_dirs": ["testcasesupport"], "support_sources": ["testcasesupport/io.c"], "flags": ["-O1", "-fno-inline", "-fno-builtin", "-fPIE", "-pie", "-Wl,-z,relro,-z,now"]},
+      "process": {"input_model": "argv", "argv_values": ["program"]}
+    },
+    {
+      "id": "cwe476-null-vulnerable",
+      "lane": "vulnerable",
+      "comparison_group": "cwe476-null",
+      "vulnerability_type": "null_pointer_dereference",
+      "source": "testcases/CWE476_NULL_Pointer_Dereference/CWE476_NULL_Pointer_Dereference__char_01.c",
+      "compile": {"defines": ["INCLUDEMAIN", "OMITGOOD"], "include_dirs": ["testcasesupport"], "support_sources": ["testcasesupport/io.c"], "flags": ["-O1", "-fno-inline", "-fno-builtin", "-fPIE", "-pie", "-Wl,-z,relro,-z,now"]},
+      "process": {"input_model": "argv", "argv_values": ["program"]}
+    },
+    {
+      "id": "cwe476-null-fixed",
+      "lane": "fixed",
+      "comparison_group": "cwe476-null",
+      "vulnerability_type": "null_pointer_dereference",
+      "source": "testcases/CWE476_NULL_Pointer_Dereference/CWE476_NULL_Pointer_Dereference__char_01.c",
+      "compile": {"defines": ["INCLUDEMAIN", "OMITBAD"], "include_dirs": ["testcasesupport"], "support_sources": ["testcasesupport/io.c"], "flags": ["-O1", "-fno-inline", "-fno-builtin", "-fPIE", "-pie", "-Wl,-z,relro,-z,now"]},
+      "process": {"input_model": "argv", "argv_values": ["program"]}
+    }
+  ]
+}
