@@ -9,6 +9,7 @@ from binary_agent.analysis.candidates import (
     confirmation_review_rule,
     confirmation_rule_counts,
     extract_static_candidates,
+    _reconcile_candidate_duplicates,
     run_static_pipeline,
     select_confirmation_candidates,
 )
@@ -3983,6 +3984,85 @@ void main(void) {
     assert report.vulnerability_reports == []
 
 
+def test_interprocedural_summary_carries_exact_callee_store_address(tmp_path: Path) -> None:
+    init_text = """
+// decompiler header one
+// decompiler header two
+// decompiler header three
+void init(Ctx *ctx) {
+  *(int *)(ctx + 0x10) = 0;
+}
+"""
+    main_text = """
+void main(void) {
+  init((Ctx *)local_8);
+}
+"""
+    records = [
+        _record(
+            name="main",
+            address="0x1000",
+            ordinal=0,
+            relative_path="main.c",
+            text=main_text,
+            stack_regions=[_stack_region("local_8", size=8, start=-8)],
+        ),
+        replace(
+            _record(
+                name="init",
+                address="0x1100",
+                ordinal=1,
+                relative_path="init.c",
+                text=init_text,
+                pcode_stores=[
+                    {
+                        "operation_address": "0x1110",
+                        "write_width": 4,
+                        "address_vars": ["ctx"],
+                        "pcode": "STORE",
+                    }
+                ],
+                c_line_addresses=[
+                    {
+                        "line_number": 3,
+                        "addresses": ["0x1110"],
+                        "token_operations": [
+                            {"token": "=", "operation_address": "0x1110", "pcode": "STORE"}
+                        ],
+                    }
+                ],
+            ),
+            c_line_number_offset=3,
+        ),
+    ]
+    export_dir = _write_export(
+        tmp_path,
+        records,
+        {"main.c": main_text, "init.c": init_text},
+    )
+
+    report = run_static_pipeline(export_dir)
+
+    candidates = [candidate for candidate in report.candidate_findings if candidate.function_name == "main"]
+    assert len(candidates) == 1
+    assert candidates[0].kind == "interprocedural_pointer_store"
+    assert candidates[0].operation_address == "0x1110"
+    assert "pcode_stores" in candidates[0].evidence_sources
+    assert ":0x1110:pointer_store:" in candidates[0].candidate_id
+
+    blank = replace(
+        candidates[0],
+        candidate_id="same-summary-without-operation",
+        operation_address="",
+        evidence_sources=["c_text", "interprocedural_summary"],
+    )
+    reconciled, suppressed = _reconcile_candidate_duplicates([blank, candidates[0]])
+    assert reconciled == candidates
+    assert [item.reason for item in suppressed] == [
+        "duplicate_write_fact_missing_exact_operation"
+    ]
+
+
 def test_interprocedural_address_taken_object_uses_symbolic_capacity(tmp_path: Path) -> None:
     init_text = """
 void init(Ctx *ctx) {
@@ -4464,6 +4544,139 @@ void main(void) {
     assert candidates[0].destination_kind == "global"
     assert candidates[0].target_buffer == "global_buf"
     assert candidates[0].verdict == "overflow"
+
+
+def test_metadata_global_pointer_value_is_not_modeled_as_pointer_slot_capacity(tmp_path: Path) -> None:
+    text = """
+void update(void) {
+  *(undefined4 *)(PTR_globals + 0x18) = 0;
+}
+"""
+    record = _record(
+        name="update",
+        address="0x1000",
+        ordinal=0,
+        relative_path="update.c",
+        text=text,
+        global_refs=[
+            {
+                "label": "PTR_globals",
+                "var_display": "PTR_globals",
+                "var_names": ["PTR_globals"],
+                "size_bytes": 8,
+                "destination_kind": "global",
+                "capacity_source": "ghidra_data_reference",
+                "object_trust": "metadata",
+            }
+        ],
+    )
+    export_dir = _write_export(tmp_path, [record], {"update.c": text})
+    manifest, nodes = load_function_nodes(export_dir)
+
+    assert extract_static_candidates(manifest, nodes) == []
+
+
+def test_metadata_global_pointer_value_does_not_propagate_as_local_object_alias(tmp_path: Path) -> None:
+    text = """
+void update(void) {
+  long ctx;
+  ctx = PTR_globals;
+  *(undefined4 *)(ctx + 0x18) = 0;
+}
+"""
+    record = _record(
+        name="update",
+        address="0x1000",
+        ordinal=0,
+        relative_path="update.c",
+        text=text,
+        global_refs=[
+            {
+                "label": "PTR_globals",
+                "var_display": "PTR_globals",
+                "var_names": ["PTR_globals"],
+                "size_bytes": 8,
+                "destination_kind": "global",
+                "capacity_source": "ghidra_data_reference",
+                "object_trust": "metadata",
+            }
+        ],
+    )
+    export_dir = _write_export(tmp_path, [record], {"update.c": text})
+    manifest, nodes = load_function_nodes(export_dir)
+
+    assert extract_static_candidates(manifest, nodes) == []
+
+
+def test_explicit_address_of_metadata_global_remains_a_bounds_candidate(tmp_path: Path) -> None:
+    text = """
+void update(void) {
+  *(undefined4 *)(&DAT_global + 0x18) = 0;
+}
+"""
+    record = _record(
+        name="update",
+        address="0x1000",
+        ordinal=0,
+        relative_path="update.c",
+        text=text,
+        global_refs=[
+            {
+                "label": "DAT_global",
+                "var_display": "DAT_global",
+                "var_names": ["DAT_global"],
+                "size_bytes": 1,
+                "destination_kind": "global",
+                "capacity_source": "ghidra_data_reference",
+                "object_trust": "metadata",
+            }
+        ],
+    )
+    export_dir = _write_export(tmp_path, [record], {"update.c": text})
+    manifest, nodes = load_function_nodes(export_dir)
+
+    candidates = extract_static_candidates(manifest, nodes)
+
+    assert len(candidates) == 1
+    assert candidates[0].target_buffer == "DAT_global"
+    assert candidates[0].capacity_source == "direct_object_extent_unknown"
+
+
+def test_typed_global_array_decay_remains_a_bounds_candidate(tmp_path: Path) -> None:
+    text = """
+void update(int index) {
+  char *cursor;
+  cursor = global_buf;
+  *(undefined1 *)(cursor + index) = 0;
+}
+"""
+    record = _record(
+        name="update",
+        address="0x1000",
+        ordinal=0,
+        relative_path="update.c",
+        text=text,
+        global_refs=[
+            {
+                "label": "global_buf",
+                "var_display": "global_buf",
+                "var_names": ["global_buf"],
+                "size_bytes": 16,
+                "data_types": ["char[16]"],
+                "destination_kind": "global",
+                "capacity_source": "ghidra_data_reference",
+                "object_trust": "metadata",
+            }
+        ],
+    )
+    export_dir = _write_export(tmp_path, [record], {"update.c": text})
+    manifest, nodes = load_function_nodes(export_dir)
+
+    candidates = extract_static_candidates(manifest, nodes)
+
+    assert len(candidates) == 1
+    assert candidates[0].target_buffer == "global_buf"
+    assert "c_alias" in candidates[0].evidence_sources
 
 
 def test_ghidra_data_reference_extent_is_not_proof_grade(tmp_path: Path) -> None:

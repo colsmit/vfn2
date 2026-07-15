@@ -7,6 +7,7 @@ accepts a certificate only when its complete proof payload matches.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -30,15 +31,28 @@ C_VLA_RULE = "c_vla_index_capacity_v1"
 C_INPLACE_RULE = "c_guarded_inplace_byte_store_v1"
 C_REALLOC_RULE = "c_realloc_nonstack_object_v1"
 LIBUBOX_BLOBMSG_INIT_RULE = "libubox_blobmsg_parse_initializes_table_v1"
+LIBUBOX_NAMED_BLOBMSG_INIT_RULE = "libubox_named_blobmsg_parse_initializes_table_v1"
 C_ASSIGNMENT_RULE = "c_unconditional_assignment_before_use_v1"
 C_IMMEDIATE_ASSIGNMENT_RULE = "c_immediate_unconditional_assignment_v1"
 C_DECLARATION_INIT_RULE = "c_declaration_initializer_v1"
 LIBUBOX_CALLOC_INIT_RULE = "libubox_checked_calloc_a_outputs_v1"
+LIBUBOX_UNCHECKED_CALLOC_BUG_RULE = "libubox_unchecked_calloc_a_output_v1"
 LIBUBOX_FOREACH_INIT_RULE = "libubox_foreach_macro_initializes_v1"
 C_CHECKED_API_OUTPUT_RULE = "c_checked_api_output_initialization_v1"
+C_CHECKED_NETWORK_PARSE_RULE = "c_checked_network_parse_output_v1"
+C_API_OUTPUT_ADDRESS_RULE = "c_api_output_address_not_read_v1"
+C_STAT_CALL_EFFECT_RULE = "c_stat_output_call_effect_not_read_v1"
+C_FORMATTED_INPUT_OUTPUT_RULE = "c_formatted_input_output_not_read_v1"
 C_GUARDED_POINTER_RULE = "c_dominating_nonnull_guard_v1"
 C_ARRAY_OBJECT_RULE = "c_array_object_nonnull_v1"
 C_READ_TERMINATOR_RULE = "c_read_terminator_bounds_v1"
+C_TYPED_LINK_STORE_RULE = "c_typed_link_pointer_store_v1"
+C_BOUNDED_WRAPPER_READ_RULE = "c_bounded_wrapper_read_terminator_v1"
+C_MASKED_RING_INDEX_RULE = "c_masked_static_ring_index_v1"
+C_TRAILING_ESCAPE_RULE = "c_trailing_escape_terminator_v1"
+C_MACRO_TYPED_MEMBER_RULE = "c_macro_typed_member_store_v1"
+C_BOUNDED_TYPED_BYTE_STORE_RULE = "c_bounded_typed_byte_array_store_v1"
+C_STRUCT_OUTPUT_INIT_RULE = "c_struct_output_memset_initialization_v1"
 C_GUARDED_FIXED_ARRAY_RULE = "c_guarded_fixed_array_index_v1"
 C_HTML_ESCAPE_RULE = "c_html_escape_capacity_v1"
 C_JAIL_ARGV_RULE = "c_jail_argv_capacity_v1"
@@ -66,6 +80,9 @@ C_TRUSTED_ALLOC_RULE = "c_bounded_trusted_allocation_v1"
 C_CLIENT_CONTEXT_RULE = "c_live_client_context_nonnull_v1"
 LIBUBOX_BLOBMSG_VALUE_RULE = "libubox_guarded_blobmsg_value_v1"
 C_PROCESS_SPLIT_LIFETIME_RULE = "c_process_split_lifetime_v1"
+BUSYBOX_RTATTR_INIT_RULE = "busybox_parse_rtattr_initializes_table_v1"
+BUSYBOX_GETOPT32_OUTPUT_RULE = "busybox_getopt32_guarded_output_v1"
+C_FIXED_RECV_OUTPUT_RULE = "c_fixed_size_recv_initialization_v1"
 SEMANTIC_INVESTIGATION_RULE = "semantic_investigation_v1"
 REGISTERED_RULES = (
     X86_CALL_RULE,
@@ -77,15 +94,28 @@ REGISTERED_RULES = (
     C_INPLACE_RULE,
     C_REALLOC_RULE,
     LIBUBOX_BLOBMSG_INIT_RULE,
+    LIBUBOX_NAMED_BLOBMSG_INIT_RULE,
     C_ASSIGNMENT_RULE,
     C_IMMEDIATE_ASSIGNMENT_RULE,
     C_DECLARATION_INIT_RULE,
     LIBUBOX_CALLOC_INIT_RULE,
+    LIBUBOX_UNCHECKED_CALLOC_BUG_RULE,
     LIBUBOX_FOREACH_INIT_RULE,
+    C_API_OUTPUT_ADDRESS_RULE,
+    C_STAT_CALL_EFFECT_RULE,
+    C_FORMATTED_INPUT_OUTPUT_RULE,
     C_CHECKED_API_OUTPUT_RULE,
+    C_CHECKED_NETWORK_PARSE_RULE,
     C_GUARDED_POINTER_RULE,
     C_ARRAY_OBJECT_RULE,
     C_READ_TERMINATOR_RULE,
+    C_TYPED_LINK_STORE_RULE,
+    C_BOUNDED_WRAPPER_READ_RULE,
+    C_MASKED_RING_INDEX_RULE,
+    C_TRAILING_ESCAPE_RULE,
+    C_MACRO_TYPED_MEMBER_RULE,
+    C_BOUNDED_TYPED_BYTE_STORE_RULE,
+    C_STRUCT_OUTPUT_INIT_RULE,
     C_GUARDED_FIXED_ARRAY_RULE,
     C_HTML_ESCAPE_RULE,
     C_JAIL_ARGV_RULE,
@@ -113,6 +143,9 @@ REGISTERED_RULES = (
     C_CLIENT_CONTEXT_RULE,
     LIBUBOX_BLOBMSG_VALUE_RULE,
     C_PROCESS_SPLIT_LIFETIME_RULE,
+    BUSYBOX_RTATTR_INIT_RULE,
+    BUSYBOX_GETOPT32_OUTPUT_RULE,
+    C_FIXED_RECV_OUTPUT_RULE,
 )
 RULE_BASES = {
     X86_CALL_RULE: "verified_modeling_error",
@@ -124,15 +157,28 @@ RULE_BASES = {
     C_INPLACE_RULE: "source_proves_safety",
     C_REALLOC_RULE: "verified_modeling_error",
     LIBUBOX_BLOBMSG_INIT_RULE: "source_proves_safety",
+    LIBUBOX_NAMED_BLOBMSG_INIT_RULE: "source_proves_safety",
     C_ASSIGNMENT_RULE: "source_proves_safety",
     C_IMMEDIATE_ASSIGNMENT_RULE: "source_proves_safety",
     C_DECLARATION_INIT_RULE: "source_proves_safety",
     LIBUBOX_CALLOC_INIT_RULE: "source_proves_safety",
+    LIBUBOX_UNCHECKED_CALLOC_BUG_RULE: "exact_source_feasible_violation",
     LIBUBOX_FOREACH_INIT_RULE: "source_proves_safety",
+    C_API_OUTPUT_ADDRESS_RULE: "verified_modeling_error",
+    C_STAT_CALL_EFFECT_RULE: "verified_modeling_error",
+    C_FORMATTED_INPUT_OUTPUT_RULE: "verified_modeling_error",
     C_CHECKED_API_OUTPUT_RULE: "source_proves_safety",
+    C_CHECKED_NETWORK_PARSE_RULE: "source_proves_safety",
     C_GUARDED_POINTER_RULE: "source_proves_safety",
     C_ARRAY_OBJECT_RULE: "source_proves_safety",
     C_READ_TERMINATOR_RULE: "source_proves_safety",
+    C_TYPED_LINK_STORE_RULE: "source_proves_safety",
+    C_BOUNDED_WRAPPER_READ_RULE: "source_proves_safety",
+    C_MASKED_RING_INDEX_RULE: "source_proves_safety",
+    C_TRAILING_ESCAPE_RULE: "source_proves_safety",
+    C_MACRO_TYPED_MEMBER_RULE: "source_proves_safety",
+    C_BOUNDED_TYPED_BYTE_STORE_RULE: "source_proves_safety",
+    C_STRUCT_OUTPUT_INIT_RULE: "source_proves_safety",
     C_GUARDED_FIXED_ARRAY_RULE: "source_proves_safety",
     C_HTML_ESCAPE_RULE: "source_proves_safety",
     C_JAIL_ARGV_RULE: "source_proves_safety",
@@ -160,6 +206,9 @@ RULE_BASES = {
     C_CLIENT_CONTEXT_RULE: "source_proves_safety",
     LIBUBOX_BLOBMSG_VALUE_RULE: "verified_modeling_error",
     C_PROCESS_SPLIT_LIFETIME_RULE: "source_proves_safety",
+    BUSYBOX_RTATTR_INIT_RULE: "source_proves_safety",
+    BUSYBOX_GETOPT32_OUTPUT_RULE: "source_proves_safety",
+    C_FIXED_RECV_OUTPUT_RULE: "source_proves_safety",
 }
 RULE_DECISIONS = {
     rule_id: (
@@ -474,6 +523,8 @@ def derive_rule_proof(context: CampaignContext, rule_id: str) -> dict[str, Any]:
         return _derive_c_realloc_nonstack_object(context)
     if rule_id == LIBUBOX_BLOBMSG_INIT_RULE:
         return _derive_libubox_blobmsg_initialization(context)
+    if rule_id == LIBUBOX_NAMED_BLOBMSG_INIT_RULE:
+        return _derive_libubox_named_blobmsg_initialization(context)
     if rule_id == C_ASSIGNMENT_RULE:
         return _derive_c_unconditional_assignment(context)
     if rule_id == C_IMMEDIATE_ASSIGNMENT_RULE:
@@ -482,16 +533,40 @@ def derive_rule_proof(context: CampaignContext, rule_id: str) -> dict[str, Any]:
         return _derive_c_declaration_initializer(context)
     if rule_id == LIBUBOX_CALLOC_INIT_RULE:
         return _derive_libubox_checked_calloc_outputs(context)
+    if rule_id == LIBUBOX_UNCHECKED_CALLOC_BUG_RULE:
+        return _derive_libubox_unchecked_calloc_output(context)
     if rule_id == LIBUBOX_FOREACH_INIT_RULE:
         return _derive_libubox_foreach_initialization(context)
+    if rule_id == C_API_OUTPUT_ADDRESS_RULE:
+        return _derive_c_api_output_address(context)
+    if rule_id == C_STAT_CALL_EFFECT_RULE:
+        return _derive_c_stat_call_effect(context)
+    if rule_id == C_FORMATTED_INPUT_OUTPUT_RULE:
+        return _derive_c_formatted_input_output(context)
     if rule_id == C_CHECKED_API_OUTPUT_RULE:
         return _derive_c_checked_api_output(context)
+    if rule_id == C_CHECKED_NETWORK_PARSE_RULE:
+        return _derive_c_checked_network_parse_output(context)
     if rule_id == C_GUARDED_POINTER_RULE:
         return _derive_c_guarded_pointer(context)
     if rule_id == C_ARRAY_OBJECT_RULE:
         return _derive_c_array_object(context)
     if rule_id == C_READ_TERMINATOR_RULE:
         return _derive_c_read_terminator(context)
+    if rule_id == C_TYPED_LINK_STORE_RULE:
+        return _derive_c_typed_link_store(context)
+    if rule_id == C_BOUNDED_WRAPPER_READ_RULE:
+        return _derive_c_bounded_wrapper_read(context)
+    if rule_id == C_MASKED_RING_INDEX_RULE:
+        return _derive_c_masked_ring_index(context)
+    if rule_id == C_TRAILING_ESCAPE_RULE:
+        return _derive_c_trailing_escape_terminator(context)
+    if rule_id == C_MACRO_TYPED_MEMBER_RULE:
+        return _derive_c_macro_typed_member(context)
+    if rule_id == C_BOUNDED_TYPED_BYTE_STORE_RULE:
+        return _derive_c_bounded_typed_byte_store(context)
+    if rule_id == C_STRUCT_OUTPUT_INIT_RULE:
+        return _derive_c_struct_output_initialization(context)
     if rule_id == C_GUARDED_FIXED_ARRAY_RULE:
         return _derive_c_guarded_fixed_array(context)
     if rule_id == C_HTML_ESCAPE_RULE:
@@ -546,6 +621,12 @@ def derive_rule_proof(context: CampaignContext, rule_id: str) -> dict[str, Any]:
         return _derive_libubox_blobmsg_value(context)
     if rule_id == C_PROCESS_SPLIT_LIFETIME_RULE:
         return _derive_c_process_split_lifetime(context)
+    if rule_id == BUSYBOX_RTATTR_INIT_RULE:
+        return _derive_busybox_rtattr_initialization(context)
+    if rule_id == BUSYBOX_GETOPT32_OUTPUT_RULE:
+        return _derive_busybox_getopt32_output(context)
+    if rule_id == C_FIXED_RECV_OUTPUT_RULE:
+        return _derive_c_fixed_recv_output(context)
     raise RuleNotApplicable(f"unregistered rule {rule_id!r}")
 
 
@@ -1137,7 +1218,26 @@ def _derive_c_realloc_nonstack_object(context: CampaignContext) -> dict[str, Any
 def _derive_libubox_blobmsg_initialization(context: CampaignContext) -> dict[str, Any]:
     if str(context.state.get("vulnerability_type") or "") != "uninitialized_memory_use":
         raise RuleNotApplicable("candidate is not an uninitialized-use candidate")
-    source = _exact_source_context(context)
+    if (
+        str(context.binding.get("status") or "") != "resolved"
+        or not str(context.binding.get("address") or "")
+        or not str(context.binding.get("pcode") or "")
+    ):
+        raise RuleNotApplicable("candidate has no resolved exact binary operation")
+    source_contexts = _source_contexts_for_operation(
+        context, str(context.binding.get("address") or "")
+    )
+    source = source_contexts[0]
+    for candidate_source in source_contexts:
+        candidate_frame = _mapping(candidate_source.get("frame"))
+        candidate_lines = candidate_source["lines"]
+        candidate_line = int(candidate_frame.get("line") or 0)
+        candidate_statement = candidate_lines[candidate_line - 1].strip()
+        if re.search(r"\btb\b", candidate_statement) or _enclosing_blobmsg_table_alias(
+            candidate_lines, candidate_line, candidate_statement
+        ) is not None:
+            source = candidate_source
+            break
     frame = source["frame"]
     lines = source["lines"]
     line_number = int(frame["line"])
@@ -1146,6 +1246,9 @@ def _derive_libubox_blobmsg_initialization(context: CampaignContext) -> dict[str
     function_prefix = _source_function_prefix(lines, function_name, line_number)
     macro_line: int | None = None
     reads_table = re.search(r"\btb\b", statement) is not None
+    guarded_alias = _enclosing_blobmsg_table_alias(lines, line_number, statement)
+    if guarded_alias is not None:
+        reads_table = True
     macro_call = re.match(r"(?P<name>[A-Za-z_]\w*)\s*\(", statement)
     if not reads_table and macro_call is not None:
         definition = re.compile(
@@ -1180,18 +1283,29 @@ def _derive_libubox_blobmsg_initialization(context: CampaignContext) -> dict[str
             statement=statement,
             macro_line=macro_line,
         )
-    array_declarations = list(
+    declaration_statements = list(
         re.finditer(
-            r"struct\s+blob_attr\s*\*\s*tb\s*\[\s*(?P<count>(?:[A-Za-z_]\w*|\d+))\s*\]\s*;",
+            r"struct\s+blob_attr\s+(?P<declarators>[^;]+)\s*;",
             function_prefix,
         )
     )
-    scalar_declarations = list(
-        re.finditer(r"struct\s+blob_attr\s*\*\s*tb\s*;", function_prefix)
-    )
+    array_declarations: list[tuple[re.Match[str], re.Match[str]]] = []
+    scalar_declarations: list[re.Match[str]] = []
+    for declaration_statement in declaration_statements:
+        declarators = declaration_statement.group("declarators")
+        array = re.search(
+            r"(?:^|,)\s*\*\s*tb\s*\[\s*"
+            r"(?P<count>(?:[A-Za-z_]\w*|\d+))\s*\]",
+            declarators,
+        )
+        if array is not None:
+            array_declarations.append((declaration_statement, array))
+            continue
+        if re.search(r"(?:^|,)\s*\*\s*tb\s*(?=,|$)", declarators):
+            scalar_declarations.append(declaration_statement)
     if array_declarations:
-        declaration = array_declarations[-1]
-        count_name = declaration.group("count")
+        declaration, array_declaration = array_declarations[-1]
+        count_name = array_declaration.group("count")
         expected_table_argument = "tb"
     elif scalar_declarations:
         declaration = scalar_declarations[-1]
@@ -1235,7 +1349,16 @@ def _derive_libubox_blobmsg_initialization(context: CampaignContext) -> dict[str
         context,
         source,
         source_function=str(frame["function"]),
-        source_lines=[line_number],
+        source_lines=sorted(
+            {
+                line_number,
+                *(
+                    [int(guarded_alias["guard_line"])]
+                    if guarded_alias is not None
+                    else []
+                ),
+            }
+        ),
     )
     return {
         "rule_claim": "blobmsg_parse zero-initializes every table slot before parsing or returning",
@@ -1250,6 +1373,11 @@ def _derive_libubox_blobmsg_initialization(context: CampaignContext) -> dict[str
             "table": "tb",
             "element_count": count_name,
             "parser_count_expression": count_expression,
+            "table_access": (
+                dict(guarded_alias)
+                if guarded_alias is not None
+                else {"kind": "direct_table_read", "line": line_number}
+            ),
         },
         "dependency_contract": dependency,
         "additional_source_refs": [
@@ -1268,6 +1396,1187 @@ def _derive_libubox_blobmsg_initialization(context: CampaignContext) -> dict[str
             "all_path_initialization": True,
         },
     }
+
+
+def _enclosing_blobmsg_table_alias(
+    lines: Sequence[str], line_number: int, statement: str
+) -> dict[str, Any] | None:
+    """Find an unconditional ``cur = tb[index]`` assignment guarding a use.
+
+    The assignment must be the first evaluated expression in a braced ``if``
+    condition.  This excludes short-circuit prefixes that could enter the block
+    without assigning the alias.
+    """
+
+    candidates: list[dict[str, Any]] = []
+    pattern = re.compile(
+        r"\bif\s*\(\s*\(\s*(?P<alias>[A-Za-z_]\w*)\s*=\s*"
+        r"tb\s*\[\s*(?P<index>[^\]]+)\s*\]\s*\)\s*"
+        r"(?:(?P<comparison>==|!=)\s*(?:NULL|0)\b)?\s*\)",
+        re.DOTALL,
+    )
+    for open_line, close_line in _c_brace_pairs(lines):
+        if not (open_line < line_number <= close_line):
+            continue
+        header_start, header = _c_block_header(lines, open_line)
+        match = pattern.search(header)
+        if match is None or re.search(rf"\b{re.escape(match.group('alias'))}\b", statement) is None:
+            continue
+        candidates.append(
+            {
+                "kind": "enclosing_table_alias_assignment",
+                "alias": match.group("alias"),
+                "table_index": " ".join(match.group("index").split()),
+                "comparison": match.group("comparison") or "truthy",
+                "guard_line": header_start,
+                "block_end_line": close_line,
+                "guard": " ".join(header.split()),
+            }
+        )
+    previous_line = line_number - 1
+    while previous_line > 0 and not lines[previous_line - 1].strip():
+        previous_line -= 1
+    if previous_line > 0:
+        for header_start in range(previous_line, max(0, previous_line - 4), -1):
+            header = "\n".join(lines[header_start - 1 : previous_line])
+            match = pattern.search(header)
+            if (
+                match is None
+                or "{" in header
+                or ";" in header
+                or re.search(rf"\b{re.escape(match.group('alias'))}\b", statement) is None
+            ):
+                continue
+            candidates.append(
+                {
+                    "kind": "unbraced_table_alias_assignment",
+                    "alias": match.group("alias"),
+                    "table_index": " ".join(match.group("index").split()),
+                    "comparison": match.group("comparison") or "truthy",
+                    "guard_line": header_start,
+                    "block_end_line": line_number,
+                    "guard": " ".join(header.split()),
+                }
+            )
+            break
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: int(item["guard_line"]))
+
+
+def _derive_libubox_named_blobmsg_initialization(
+    context: CampaignContext,
+) -> dict[str, Any]:
+    """Prove initialization of any explicitly named local blobmsg table."""
+
+    if str(context.state.get("vulnerability_type") or "") != "uninitialized_memory_use":
+        raise RuleNotApplicable("candidate is not an uninitialized-use candidate")
+    if (
+        str(context.binding.get("status") or "") != "resolved"
+        or not str(context.binding.get("address") or "")
+        or not str(context.binding.get("pcode") or "")
+    ):
+        raise RuleNotApplicable("candidate has no resolved exact binary operation")
+    selected: tuple[dict[str, Any], dict[str, Any]] | None = None
+    for source in _source_contexts_for_operation(
+        context, str(context.binding.get("address") or "")
+    ):
+        frame = _mapping(source.get("frame"))
+        try:
+            proof = _named_blobmsg_table_source_proof(
+                source["lines"],
+                function_name=str(frame.get("function") or ""),
+                line_number=int(frame.get("line") or 0),
+            )
+        except RuleNotApplicable:
+            continue
+        selected = (source, proof)
+        break
+    if selected is None:
+        raise RuleNotApplicable(
+            "exact source operation does not read a named parsed blobmsg table"
+        )
+    source, source_proof = selected
+    frame = _mapping(source.get("frame"))
+    dependency = _libubox_blobmsg_contract(
+        context,
+        _mapping(source.get("mapping")),
+        function=str(source_proof["parser"]),
+    )
+    source_binding = _source_binding(
+        context,
+        source,
+        source_function=str(frame["function"]),
+        source_lines=sorted(
+            {
+                int(frame["line"]),
+                int(source_proof["declaration_line"]),
+                int(source_proof["parse_line"]),
+            }
+        ),
+    )
+    return {
+        "rule_claim": (
+            "the named local blobmsg table is completely zero-initialized before "
+            "the exact table access"
+        ),
+        "operation_address": str(context.binding.get("address") or ""),
+        "source_binding": source_binding,
+        "source_excerpt": {
+            "path": source_binding["source_path"],
+            "sha256": source_binding["source_sha256"],
+            "function": str(frame["function"]),
+            "line": int(frame["line"]),
+            "statement": str(source_proof["statement"]),
+            "table": str(source_proof["table"]),
+            "capacity_expression": str(source_proof["capacity_expression"]),
+            "parser_count_expression": str(source_proof["parser_count_expression"]),
+            "parse_line": int(source_proof["parse_line"]),
+        },
+        "dependency_contract": dependency,
+        "additional_source_refs": [
+            dependency["package_makefile"],
+            dependency["source_archive"],
+        ],
+        "initialization": {
+            "destination": str(source_proof["table"]),
+            "element_count": str(source_proof["capacity_expression"]),
+            "value": 0,
+            "path_coverage": (
+                f"first statement of {source_proof['parser']}, before every return"
+            ),
+        },
+        "claims": {
+            "exact_operation": True,
+            "source_or_binary_binding": True,
+            "all_path_initialization": True,
+        },
+    }
+
+
+def _named_blobmsg_table_source_proof(
+    lines: Sequence[str], *, function_name: str, line_number: int
+) -> dict[str, Any]:
+    if not function_name or line_number <= 0 or line_number > len(lines):
+        raise RuleNotApplicable("named blobmsg source frame is incomplete")
+    prefix = _source_function_prefix(lines, function_name, line_number)
+    statement = _c_statement_from_line(lines, line_number)
+    table_names = sorted(set(re.findall(r"\b([A-Za-z_]\w*)\s*\[", statement)))
+    proofs: list[dict[str, Any]] = []
+    for table in table_names:
+        declarations = list(
+            re.finditer(
+                rf"struct\s+blob_attr\s*\*\s*{re.escape(table)}\s*"
+                r"\[\s*(?P<capacity>[^\]]+)\s*\]\s*(?:,|;)",
+                prefix,
+            )
+        )
+        if len(declarations) != 1:
+            continue
+        declaration = declarations[0]
+        parses = list(
+            re.finditer(
+                rf"(?P<parser>blobmsg_parse(?:_array)?)\s*\(\s*"
+                rf"[^,]+,\s*(?P<count>[^,]+),\s*{re.escape(table)}\s*,"
+                r"[^;]*\)\s*;",
+                prefix[declaration.end() :],
+                re.DOTALL,
+            )
+        )
+        if not parses:
+            continue
+        parse = parses[-1]
+        capacity = " ".join(declaration.group("capacity").split())
+        count = " ".join(parse.group("count").split())
+        if re.sub(r"[\s()]", "", count) not in {
+            re.sub(r"[\s()]", "", capacity),
+            re.sub(r"[\s()]", "", f"ARRAY_SIZE({table})"),
+        }:
+            continue
+        parse_absolute = declaration.end() + parse.start()
+        proofs.append(
+            {
+                "table": table,
+                "capacity_expression": capacity,
+                "parser_count_expression": count,
+                "parser": parse.group("parser"),
+                "declaration_line": prefix[: declaration.start()].count("\n") + 1,
+                "parse_line": prefix[:parse_absolute].count("\n") + 1,
+                "statement": " ".join(statement.split()),
+            }
+        )
+    if len(proofs) != 1:
+        raise RuleNotApplicable(
+            "named blobmsg table does not have one exact capacity-matched parse"
+        )
+    return proofs[0]
+
+
+def _derive_busybox_rtattr_initialization(context: CampaignContext) -> dict[str, Any]:
+    """Prove a BusyBox netlink attribute-table read is fully initialized."""
+
+    if str(context.state.get("vulnerability_type") or "") != "uninitialized_memory_use":
+        raise RuleNotApplicable("candidate is not an uninitialized-use candidate")
+    if (
+        str(context.binding.get("status") or "") != "resolved"
+        or not str(context.binding.get("address") or "")
+        or not str(context.binding.get("pcode") or "")
+    ):
+        raise RuleNotApplicable("candidate has no resolved exact binary operation")
+    selected: tuple[dict[str, Any], dict[str, Any]] | None = None
+    for source in _source_contexts_for_operation(
+        context, str(context.binding.get("address") or "")
+    ):
+        frame = _mapping(source.get("frame"))
+        try:
+            proof = _busybox_rtattr_source_proof(
+                source["lines"],
+                function_name=str(frame.get("function") or ""),
+                line_number=int(frame.get("line") or 0),
+            )
+        except RuleNotApplicable:
+            continue
+        selected = (source, proof)
+        break
+    if selected is None:
+        raise RuleNotApplicable(
+            "exact source operation is not a guarded use of a parsed rtattr table"
+        )
+    source, source_proof = selected
+    frame = _mapping(source.get("frame"))
+    dependency = _busybox_parse_rtattr_contract(
+        context, _mapping(source.get("mapping"))
+    )
+    source_binding = _source_binding(
+        context,
+        source,
+        source_function=str(frame["function"]),
+        source_lines=sorted(
+            {
+                int(frame["line"]),
+                int(source_proof["declaration_line"]),
+                int(source_proof["parse_line"]),
+                *[int(item) for item in source_proof["guard_lines"]],
+            }
+        ),
+    )
+    return {
+        "rule_claim": (
+            "BusyBox parse_rtattr zero-initializes every max-plus-one table slot "
+            "before the guarded exact use"
+        ),
+        "operation_address": str(context.binding.get("address") or ""),
+        "source_binding": source_binding,
+        "source_excerpt": {
+            "path": source_binding["source_path"],
+            "sha256": source_binding["source_sha256"],
+            "function": str(frame["function"]),
+            "line": int(frame["line"]),
+            "statement": str(source_proof["statement"]),
+            "table": str(source_proof["table"]),
+            "capacity_expression": str(source_proof["capacity_expression"]),
+            "parser_max_expression": str(source_proof["parser_max_expression"]),
+            "parse_line": int(source_proof["parse_line"]),
+            "access_guard": _mapping(source_proof["access_guard"]),
+        },
+        "dependency_contract": dependency,
+        "additional_source_refs": [dependency["implementation"]],
+        "initialization": {
+            "destination": str(source_proof["table"]),
+            "byte_count_expression": (
+                f"({source_proof['parser_max_expression']} + 1) * "
+                f"sizeof({source_proof['table']}[0])"
+            ),
+            "value": 0,
+            "path_coverage": "first parse_rtattr statement, before its loop and return",
+        },
+        "claims": {
+            "exact_operation": True,
+            "source_or_binary_binding": True,
+            "all_path_initialization": True,
+        },
+    }
+
+
+def _busybox_rtattr_source_proof(
+    lines: Sequence[str], *, function_name: str, line_number: int
+) -> dict[str, Any]:
+    if not function_name or line_number <= 0 or line_number > len(lines):
+        raise RuleNotApplicable("rtattr source frame is incomplete")
+    prefix = _source_function_prefix(lines, function_name, line_number)
+    declarations = list(
+        re.finditer(
+            r"struct\s+rtattr\s*\*\s*(?P<table>[A-Za-z_]\w*)\s*"
+            r"\[\s*(?P<capacity>[^\]]+)\s*\]\s*;",
+            prefix,
+        )
+    )
+    if not declarations:
+        raise RuleNotApplicable("source function has no rtattr pointer table")
+    statement = _c_statement_from_line(lines, line_number)
+    for declaration in reversed(declarations):
+        table = declaration.group("table")
+        parses = list(
+            re.finditer(
+                rf"\bparse_rtattr\s*\(\s*{re.escape(table)}\s*,\s*"
+                r"(?P<maximum>[^,]+)\s*,[^;]*\)\s*;",
+                prefix[declaration.end() :],
+                re.DOTALL,
+            )
+        )
+        if not parses:
+            continue
+        parse = parses[-1]
+        parse_absolute = declaration.end() + parse.start()
+        parse_line = prefix[:parse_absolute].count("\n") + 1
+        capacity = " ".join(declaration.group("capacity").split())
+        maximum = " ".join(parse.group("maximum").split())
+        compact_capacity = re.sub(r"[\s()]", "", capacity)
+        compact_expected = re.sub(r"[\s()]", "", f"{maximum}+1")
+        if compact_capacity != compact_expected:
+            continue
+        access_guard = _rtattr_access_guard(
+            lines, table=table, line_number=line_number, statement=statement
+        )
+        if access_guard is None:
+            continue
+        declaration_line = prefix[: declaration.start()].count("\n") + 1
+        return {
+            "table": table,
+            "capacity_expression": capacity,
+            "parser_max_expression": maximum,
+            "declaration_line": declaration_line,
+            "parse_line": parse_line,
+            "statement": " ".join(statement.split()),
+            "guard_lines": list(access_guard.get("guard_lines") or []),
+            "access_guard": access_guard,
+        }
+    raise RuleNotApplicable("parse_rtattr count is not the declared table capacity")
+
+
+def _rtattr_access_guard(
+    lines: Sequence[str], *, table: str, line_number: int, statement: str
+) -> dict[str, Any] | None:
+    table_access = re.compile(
+        rf"{re.escape(table)}\s*\[\s*(?P<index>[^\]]+)\s*\]"
+    )
+    nearby_start = max(0, line_number - 12)
+    nearby_end = min(len(lines), line_number + 3)
+    nearby = "\n".join(lines[nearby_start:nearby_end])
+    matches = list(table_access.finditer(statement))
+    if not matches:
+        for open_line, close_line in _c_brace_pairs(lines):
+            if not (open_line <= line_number <= close_line):
+                continue
+            header_start, header = _c_block_header(lines, open_line)
+            header_match = table_access.search(header)
+            if header_match is None or not re.search(r"\bif\s*\(", header):
+                continue
+            return {
+                "kind": "enclosing_positive_table_guard",
+                "table_index": " ".join(header_match.group("index").split()),
+                "guard_lines": [header_start],
+                "guard": " ".join(header.split()),
+            }
+    if matches:
+        index = " ".join(matches[-1].group("index").split())
+        index_pattern = (
+            rf"{re.escape(table)}\s*\[\s*{re.escape(index)}\s*\]"
+        )
+        same_conditions = [
+            (offset, condition)
+            for offset, condition in _c_if_conditions(nearby)
+            if re.search(index_pattern, condition)
+        ]
+        if same_conditions:
+            condition_offset, raw_condition = same_conditions[-1]
+            condition = " ".join(raw_condition.split())
+            pointer_position = re.search(index_pattern, condition)
+            data_position = re.search(
+                r"RTA_DATA\s*\([^)]*" + index_pattern, condition
+            )
+            if data_position is None or (
+                pointer_position is not None
+                and pointer_position.start() < data_position.start()
+            ):
+                return {
+                    "kind": "short_circuit_or_positive_table_guard",
+                    "table_index": index,
+                    "guard_lines": [
+                        nearby_start
+                        + nearby[:condition_offset].count("\n")
+                        + 1
+                    ],
+                    "guard": condition,
+                }
+        negative = re.search(
+            rf"if\s*\(\s*!\s*{index_pattern}\s*\)\s*"
+            r"(?:return\b[^;]*;|\{[^{}]*return\b[^;]*;[^{}]*\})",
+            nearby,
+            re.DOTALL,
+        )
+        if negative is not None:
+            return {
+                "kind": "terminating_null_table_guard",
+                "table_index": index,
+                "guard_lines": [
+                    nearby_start + nearby[: negative.start()].count("\n") + 1
+                ],
+                "guard": " ".join(negative.group(0).split()),
+            }
+        for open_line, close_line in _c_brace_pairs(lines):
+            if not (open_line <= line_number <= close_line):
+                continue
+            header_start, header = _c_block_header(lines, open_line)
+            if re.search(rf"if\s*\([^)]*{index_pattern}", header, re.DOTALL):
+                return {
+                    "kind": "enclosing_positive_table_guard",
+                    "table_index": index,
+                    "guard_lines": [header_start],
+                    "guard": " ".join(header.split()),
+                }
+
+    prefix = "\n".join(lines[:line_number])
+    for declaration in re.finditer(
+        r"struct\s+[A-Za-z_]\w*\s*\*\s*(?P<alias>[A-Za-z_]\w*)"
+        r"\s*=\s*(?:NULL|0)\s*;",
+        prefix,
+    ):
+        alias = declaration.group("alias")
+        if re.search(rf"\b{re.escape(alias)}\b", statement) is None:
+            continue
+        assignment = re.search(
+            rf"if\s*\(\s*{re.escape(table)}\s*\[\s*(?P<index>[^\]]+)\s*\]\s*\)"
+            rf"\s*\{{?[^{{}};]*\b{re.escape(alias)}\s*=\s*RTA_DATA\s*\(",
+            prefix[declaration.end() :],
+            re.DOTALL,
+        )
+        if assignment is None:
+            continue
+        guard = re.search(
+            rf"\b{re.escape(alias)}\s*&&\s*{re.escape(alias)}\s*->",
+            nearby,
+        )
+        if guard is not None:
+            return {
+                "kind": "null_initialized_guarded_alias",
+                "alias": alias,
+                "table_index": " ".join(assignment.group("index").split()),
+                "guard_lines": [
+                    prefix[: declaration.start()].count("\n") + 1,
+                    nearby_start + nearby[: guard.start()].count("\n") + 1,
+                ],
+                "guard": guard.group(0),
+            }
+    return None
+
+
+def _c_if_conditions(text: str) -> list[tuple[int, str]]:
+    """Return balanced C ``if`` conditions with their source offsets."""
+
+    results: list[tuple[int, str]] = []
+    for match in re.finditer(r"\bif\s*\(", text):
+        open_index = text.find("(", match.start())
+        depth = 1
+        cursor = open_index + 1
+        quote = ""
+        while cursor < len(text) and depth:
+            character = text[cursor]
+            if quote:
+                if character == "\\":
+                    cursor += 2
+                    continue
+                if character == quote:
+                    quote = ""
+                cursor += 1
+                continue
+            if text.startswith("//", cursor):
+                newline = text.find("\n", cursor + 2)
+                cursor = len(text) if newline < 0 else newline + 1
+                continue
+            if text.startswith("/*", cursor):
+                end = text.find("*/", cursor + 2)
+                cursor = len(text) if end < 0 else end + 2
+                continue
+            if character in {"'", '"'}:
+                quote = character
+            elif character == "(":
+                depth += 1
+            elif character == ")":
+                depth -= 1
+            cursor += 1
+        if depth == 0:
+            results.append((match.start(), text[open_index + 1 : cursor - 1]))
+    return results
+
+
+def _strip_c_comments(text: str) -> str:
+    """Replace C comments with spaces while preserving strings and newlines."""
+
+    output: list[str] = []
+    cursor = 0
+    quote = ""
+    while cursor < len(text):
+        character = text[cursor]
+        if quote:
+            output.append(character)
+            if character == "\\" and cursor + 1 < len(text):
+                cursor += 1
+                output.append(text[cursor])
+            elif character == quote:
+                quote = ""
+            cursor += 1
+            continue
+        if character in {"'", '"'}:
+            quote = character
+            output.append(character)
+            cursor += 1
+            continue
+        if text.startswith("//", cursor):
+            while cursor < len(text) and text[cursor] != "\n":
+                output.append(" ")
+                cursor += 1
+            continue
+        if text.startswith("/*", cursor):
+            output.extend((" ", " "))
+            cursor += 2
+            while cursor < len(text) and not text.startswith("*/", cursor):
+                output.append("\n" if text[cursor] == "\n" else " ")
+                cursor += 1
+            if cursor < len(text):
+                output.extend((" ", " "))
+                cursor += 2
+            continue
+        output.append(character)
+        cursor += 1
+    return "".join(output)
+
+
+def _derive_busybox_getopt32_output(context: CampaignContext) -> dict[str, Any]:
+    if str(context.state.get("vulnerability_type") or "") != "uninitialized_memory_use":
+        raise RuleNotApplicable("candidate is not an uninitialized-use candidate")
+    if (
+        str(context.binding.get("status") or "") != "resolved"
+        or not str(context.binding.get("address") or "")
+        or not str(context.binding.get("pcode") or "")
+    ):
+        raise RuleNotApplicable("candidate has no resolved exact binary operation")
+    selected: tuple[dict[str, Any], dict[str, Any]] | None = None
+    for source in _source_contexts_for_operation(
+        context, str(context.binding.get("address") or "")
+    ):
+        frame = _mapping(source.get("frame"))
+        try:
+            proof = _busybox_getopt32_source_proof(
+                source["lines"],
+                function_name=str(frame.get("function") or ""),
+                line_number=int(frame.get("line") or 0),
+            )
+        except RuleNotApplicable:
+            continue
+        selected = (source, proof)
+        break
+    if selected is None:
+        raise RuleNotApplicable(
+            "exact source use is not guarded by its getopt32 option-output bit"
+        )
+    source, source_proof = selected
+    frame = _mapping(source.get("frame"))
+    dependency = _busybox_getopt32_contract(
+        context, _mapping(source.get("mapping"))
+    )
+    source_binding = _source_binding(
+        context,
+        source,
+        source_function=str(frame["function"]),
+        source_lines=sorted(
+            {
+                int(frame["line"]),
+                int(source_proof["getopt_line"]),
+                int(source_proof["guard_line"]),
+                *[int(item) for item in source_proof["caller_lines"]],
+            }
+        ),
+    )
+    return {
+        "rule_claim": (
+            "BusyBox getopt32 writes the option output whenever it sets the "
+            "corresponding guarded return bit"
+        ),
+        "operation_address": str(context.binding.get("address") or ""),
+        "source_binding": source_binding,
+        "source_excerpt": {
+            "path": source_binding["source_path"],
+            "sha256": source_binding["source_sha256"],
+            "function": str(frame["function"]),
+            "line": int(frame["line"]),
+            "statement": str(source_proof["statement"]),
+            "getopt_call": str(source_proof["getopt_call"]),
+            "guard": str(source_proof["guard"]),
+        },
+        "dependency_contract": dependency,
+        "additional_source_refs": [
+            dependency["implementation"],
+            dependency["noreturn_header"],
+        ],
+        "initialization": {
+            "output": str(source_proof["output"]),
+            "option_character": str(source_proof["option_character"]),
+            "option_bit": int(source_proof["option_bit"]),
+            "guard_flag": str(source_proof["guard_flag"]),
+            "inherited_mask_proof": _mapping(source_proof["inherited_mask_proof"]),
+            "path_coverage": (
+                "the output store precedes return with the bit set; inherited bits "
+                "cannot set this option"
+            ),
+        },
+        "claims": {
+            "exact_operation": True,
+            "source_or_binary_binding": True,
+            "all_path_initialization": True,
+        },
+    }
+
+
+def _busybox_getopt32_source_proof(
+    lines: Sequence[str], *, function_name: str, line_number: int
+) -> dict[str, Any]:
+    if not function_name or line_number <= 0 or line_number > len(lines):
+        raise RuleNotApplicable("getopt32 source frame is incomplete")
+    prefix = _source_function_prefix(lines, function_name, line_number)
+    statement = _c_statement_from_line(lines, line_number)
+    calls = list(
+        re.finditer(
+            r"(?P<result>[A-Za-z_]\w*)\s*(?P<operator>\|=|=)\s*"
+            r"getopt32\s*\((?P<arguments>[^;]+)\)\s*;",
+            prefix,
+            re.DOTALL,
+        )
+    )
+    if not calls:
+        raise RuleNotApplicable("source function has no preceding getopt32 assignment")
+    call = calls[-1]
+    outputs = re.findall(r"&\s*([A-Za-z_]\w*)", call.group("arguments"))
+    used_outputs = [
+        output
+        for output in outputs
+        if re.search(rf"\b{re.escape(output)}\b", statement)
+    ]
+    if len(used_outputs) != 1:
+        raise RuleNotApplicable("exact source use does not consume one getopt32 output")
+    output = used_outputs[0]
+    guard_matches = list(
+        re.finditer(
+            rf"if\s*\(\s*{re.escape(call.group('result'))}\s*&\s*"
+            r"(?P<flag>[A-Za-z_]\w*)\s*\)",
+            prefix,
+        )
+    )
+    if not guard_matches:
+        raise RuleNotApplicable("getopt32 output use has no matching result-bit guard")
+    guard = guard_matches[-1]
+    between = prefix[guard.end() :]
+    if re.search(rf"\b{re.escape(output)}\s*=", between):
+        raise RuleNotApplicable("getopt32 output is reassigned after its guard")
+    option_spec = _getopt32_option_spec(lines, call.group("arguments"))
+    option_outputs = [
+        option_spec[index]
+        for index in range(len(option_spec) - 1)
+        if option_spec[index + 1] == ":" and option_spec[index] != ":"
+    ]
+    if len(option_outputs) != len(outputs):
+        raise RuleNotApplicable("getopt32 option-output arity is not exact")
+    option_character = option_outputs[outputs.index(output)]
+    option_characters = [character for character in option_spec if character != ":"]
+    option_bit = option_characters.index(option_character)
+    guard_flag = guard.group("flag")
+    flag_pattern = re.compile(
+        rf"\b{re.escape(guard_flag)}\s*=\s*\(\s*1\s*<<\s*{option_bit}\s*\)"
+    )
+    if flag_pattern.search("\n".join(lines)) is None:
+        raise RuleNotApplicable("guard flag is not the getopt32 option position")
+    inherited = {
+        "kind": "direct_getopt_assignment",
+        "incoming_values": [0],
+        "target_bit": option_bit,
+        "caller_lines": [],
+    }
+    if call.group("operator") == "|=":
+        inherited = _getopt32_inherited_mask_proof(
+            lines,
+            function_name=function_name,
+            input_name=call.group("result"),
+            target_bit=option_bit,
+        )
+    getopt_line = prefix[: call.start()].count("\n") + 1
+    guard_line = prefix[: guard.start()].count("\n") + 1
+    return {
+        "output": output,
+        "option_character": option_character,
+        "option_bit": option_bit,
+        "guard_flag": guard_flag,
+        "statement": " ".join(statement.split()),
+        "getopt_call": " ".join(call.group(0).split()),
+        "getopt_line": getopt_line,
+        "guard": " ".join(guard.group(0).split()),
+        "guard_line": guard_line,
+        "caller_lines": list(inherited.get("caller_lines") or []),
+        "inherited_mask_proof": inherited,
+    }
+
+
+def _getopt32_option_spec(lines: Sequence[str], arguments: str) -> str:
+    before_outputs = arguments.split("&", 1)[0]
+    literal_parts = re.findall(r'"((?:\\.|[^"\\])*)"', before_outputs)
+    literal_text = "".join(literal_parts)
+    if r"\0" in literal_text:
+        complementary = literal_text.split(r"\0", 1)[1]
+        if re.search(r"[A-Za-z]", complementary):
+            raise RuleNotApplicable(
+                "getopt32 complementary rules can synthesize option bits"
+            )
+    identifiers = re.findall(r"\b([A-Za-z_]\w*)\b", before_outputs)
+    macro_parts: list[str] = []
+    for identifier in identifiers:
+        for index, line in enumerate(lines):
+            if re.match(rf"\s*#\s*define\s+{re.escape(identifier)}\b", line) is None:
+                continue
+            macro_lines = [line]
+            cursor = index
+            while macro_lines[-1].rstrip().endswith("\\") and cursor + 1 < len(lines):
+                cursor += 1
+                macro_lines.append(lines[cursor])
+            macro_parts.extend(
+                re.findall(r'"((?:\\.|[^"\\])*)"', "\n".join(macro_lines))
+            )
+            break
+    joined = "".join(macro_parts or literal_parts)
+    joined = joined.split(r"\0", 1)[0]
+    joined = joined.lstrip("^!+")
+    if not joined or len(joined) > 32 * 3:
+        raise RuleNotApplicable("getopt32 option specification is unresolved")
+    return joined
+
+
+def _getopt32_inherited_mask_proof(
+    lines: Sequence[str], *, function_name: str, input_name: str, target_bit: int
+) -> dict[str, Any]:
+    function_bounds = _c_function_bounds(lines, function_name)
+    if function_bounds is None:
+        raise RuleNotApplicable("cannot locate getopt32 wrapper function")
+    start_line, end_line = function_bounds
+    source_text = "\n".join(lines)
+    calls: list[tuple[int, str]] = []
+    for match in re.finditer(
+        rf"\b{re.escape(function_name)}\s*\(\s*(?P<argument>[^,()]+)\s*,",
+        source_text,
+    ):
+        call_line = source_text[: match.start()].count("\n") + 1
+        if start_line <= call_line <= end_line:
+            continue
+        calls.append((call_line, " ".join(match.group("argument").split())))
+    if not calls:
+        raise RuleNotApplicable("getopt32 wrapper has no enumerable callers")
+    incoming: list[int] = []
+    caller_lines: list[int] = []
+    for call_line, argument in calls:
+        value = _simple_c_mask_value(lines, argument)
+        if value is not None:
+            incoming.append(value)
+            caller_lines.append(call_line)
+            continue
+        enclosing = _enclosing_c_function(lines, call_line)
+        if enclosing is None or argument != input_name:
+            raise RuleNotApplicable("getopt32 inherited option mask is not finite")
+        wrapper_name, wrapper_start, wrapper_end = enclosing
+        wrapper_calls: list[tuple[int, str]] = []
+        for match in re.finditer(
+            rf"\b{re.escape(wrapper_name)}\s*\(\s*(?P<argument>[^,()]+)\s*,",
+            source_text,
+        ):
+            nested_line = source_text[: match.start()].count("\n") + 1
+            if wrapper_start <= nested_line <= wrapper_end:
+                continue
+            wrapper_calls.append((nested_line, " ".join(match.group("argument").split())))
+        if not wrapper_calls:
+            raise RuleNotApplicable("getopt32 inherited wrapper has no finite callers")
+        for nested_line, nested_argument in wrapper_calls:
+            nested_value = _simple_c_mask_value(lines, nested_argument)
+            if nested_value is None:
+                raise RuleNotApplicable("getopt32 inherited caller mask is symbolic")
+            incoming.append(nested_value)
+            caller_lines.append(nested_line)
+    target_mask = 1 << target_bit
+    if any(value & target_mask for value in incoming):
+        raise RuleNotApplicable("an inherited caller mask can set the guarded option bit")
+    return {
+        "kind": "finite_disjoint_inherited_masks",
+        "incoming_values": sorted(set(incoming)),
+        "target_bit": target_bit,
+        "caller_lines": sorted(set(caller_lines)),
+    }
+
+
+def _simple_c_mask_value(lines: Sequence[str], expression: str) -> int | None:
+    expression = expression.strip()
+    if re.fullmatch(r"0[xX][0-9A-Fa-f]+|\d+", expression):
+        return int(expression, 0)
+    pieces = [item.strip() for item in expression.split("|")]
+    value = 0
+    text = "\n".join(lines)
+    for piece in pieces:
+        match = re.search(
+            rf"\b{re.escape(piece)}\s*=\s*\(\s*1\s*<<\s*(?P<bit>\d+)\s*\)",
+            text,
+        )
+        if match is None:
+            return None
+        value |= 1 << int(match.group("bit"))
+    return value
+
+
+def _c_function_bounds(
+    lines: Sequence[str], function_name: str
+) -> tuple[int, int] | None:
+    pattern = _source_function_pattern(function_name)
+    matches: list[tuple[int, int]] = []
+    for open_line, close_line in _c_brace_pairs(lines):
+        header_start, header = _c_block_header(lines, open_line)
+        if pattern.search(header) and not re.search(
+            r"\b(?:if|for|while|switch)\s*\(", header
+        ):
+            matches.append((header_start, close_line))
+    return matches[0] if len(matches) == 1 else None
+
+
+def _enclosing_c_function(
+    lines: Sequence[str], line_number: int
+) -> tuple[str, int, int] | None:
+    candidates: list[tuple[str, int, int]] = []
+    for open_line, close_line in _c_brace_pairs(lines):
+        if not (open_line <= line_number <= close_line):
+            continue
+        header_start, header = _c_block_header(lines, open_line)
+        if re.search(r"\b(?:if|for|while|switch)\s*\(", header):
+            continue
+        names = re.findall(r"\b([A-Za-z_]\w*)\s*\(", header)
+        if names:
+            candidates.append((names[-1], header_start, close_line))
+    return min(candidates, key=lambda item: item[2] - item[1]) if candidates else None
+
+
+def _derive_c_fixed_recv_output(context: CampaignContext) -> dict[str, Any]:
+    """Prove a checked fixed-size ``recv`` initializes a used struct member."""
+
+    if str(context.state.get("vulnerability_type") or "") != "uninitialized_memory_use":
+        raise RuleNotApplicable("candidate is not an uninitialized-use candidate")
+    if (
+        str(context.binding.get("status") or "") != "resolved"
+        or not str(context.binding.get("address") or "")
+        or not str(context.binding.get("pcode") or "")
+    ):
+        raise RuleNotApplicable("candidate has no resolved exact binary operation")
+    selected: tuple[dict[str, Any], dict[str, Any]] | None = None
+    for source in _source_contexts_for_operation(
+        context, str(context.binding.get("address") or "")
+    ):
+        frame = _mapping(source.get("frame"))
+        try:
+            proof = _fixed_recv_source_proof(
+                source["lines"],
+                function_name=str(frame.get("function") or ""),
+                line_number=int(frame.get("line") or 0),
+            )
+        except RuleNotApplicable:
+            continue
+        selected = (source, proof)
+        break
+    if selected is None:
+        raise RuleNotApplicable(
+            "exact source use is not dominated by a complete fixed-size recv check"
+        )
+    source, source_proof = selected
+    frame = _mapping(source.get("frame"))
+    mapping = _mapping(source.get("mapping"))
+    layout = _reference_struct_layout(
+        context, mapping, str(source_proof["object_type"])
+    )
+    members = [
+        item
+        for item in _mapping_rows(layout.get("members"))
+        if str(item.get("name") or "") == str(source_proof["top_level_member"])
+    ]
+    if len(members) != 1:
+        raise RuleNotApplicable("compiled receive object has no unique selected member")
+    member = members[0]
+    member_end = int(member.get("offset_bytes") or 0) + int(
+        member.get("size_bytes") or 0
+    )
+    minimum = int(source_proof["minimum_accepted_size"])
+    if member_end <= 0 or member_end > minimum:
+        raise RuleNotApplicable(
+            "an accepted receive length does not cover the complete selected member"
+        )
+    dependency = _sdk_api_contract(context, mapping, api="recv")
+    source_binding = _source_binding(
+        context,
+        source,
+        source_function=str(frame["function"]),
+        source_lines=sorted(
+            {
+                int(frame["line"]),
+                int(source_proof["declaration_line"]),
+                int(source_proof["recv_line"]),
+                *[int(item) for item in source_proof["guard_lines"]],
+            }
+        ),
+    )
+    return {
+        "rule_claim": (
+            "every accepted recv length covers the complete compiled struct member "
+            "consumed by the exact operation"
+        ),
+        "operation_address": str(context.binding.get("address") or ""),
+        "source_binding": source_binding,
+        "source_excerpt": {
+            "path": source_binding["source_path"],
+            "sha256": source_binding["source_sha256"],
+            "function": str(frame["function"]),
+            "line": int(frame["line"]),
+            "statement": str(source_proof["statement"]),
+            "recv_call": str(source_proof["recv_call"]),
+            "length_guards": list(source_proof["length_guards"]),
+        },
+        "dependency_contract": dependency,
+        "additional_source_refs": [
+            dependency["sdk_archive"],
+            dependency["api_header"],
+        ],
+        "initialization": {
+            "object": str(source_proof["object"]),
+            "object_type": str(source_proof["object_type"]),
+            "compiled_layout": layout,
+            "selected_member": dict(member),
+            "selected_member_end_bytes": member_end,
+            "minimum_accepted_size_bytes": minimum,
+            "accepted_size_sets": list(source_proof["accepted_size_sets"]),
+            "path_coverage": (
+                "every enumerated short or error length returns before the exact use"
+            ),
+        },
+        "claims": {
+            "exact_operation": True,
+            "source_or_binary_binding": True,
+            "all_path_initialization": True,
+        },
+    }
+
+
+def _fixed_recv_source_proof(
+    lines: Sequence[str], *, function_name: str, line_number: int
+) -> dict[str, Any]:
+    if not function_name or line_number <= 0 or line_number > len(lines):
+        raise RuleNotApplicable("recv source frame is incomplete")
+    prefix = _source_function_prefix(lines, function_name, line_number)
+    statement = _c_statement_from_line(lines, line_number)
+    accesses = sorted(
+        set(
+            re.findall(
+                r"\b(?P<object>[A-Za-z_]\w*)\s*\.\s*"
+                r"(?P<member>[A-Za-z_]\w*)",
+                statement,
+            )
+        )
+    )
+    receive_objects: list[
+        tuple[str, str, re.Match[str], list[re.Match[str]]]
+    ] = []
+    for object_name, member_name in accesses:
+        declarations = list(
+            re.finditer(
+                rf"\b(?P<type>[A-Za-z_]\w*)\s+{re.escape(object_name)}\s*;",
+                prefix,
+            )
+        )
+        if len(declarations) != 1:
+            continue
+        declaration = declarations[0]
+        recv_calls = list(
+            re.finditer(
+                rf"\b(?P<length>[A-Za-z_]\w*)\s*=\s*recv\s*\("
+                rf"(?P<arguments>[^;]*&\s*{re.escape(object_name)}\s*,\s*"
+                rf"sizeof\s*\(\s*{re.escape(object_name)}\s*\)[^;]*)\)\s*;",
+                prefix[declaration.end() :],
+                re.DOTALL,
+            )
+        )
+        if recv_calls:
+            receive_objects.append(
+                (object_name, member_name, declaration, recv_calls)
+            )
+    if len(receive_objects) != 1:
+        raise RuleNotApplicable(
+            "exact source statement does not select one complete recv object member"
+        )
+    object_name, member_name, declaration, recv_calls = receive_objects[0]
+    recv_call = recv_calls[-1]
+    recv_absolute = declaration.end() + recv_call.start()
+    recv_line = prefix[:recv_absolute].count("\n") + 1
+    length_name = recv_call.group("length")
+    guards: list[dict[str, Any]] = []
+    for open_line, close_line in _c_brace_pairs(lines):
+        if not (recv_line < open_line < line_number and close_line < line_number):
+            continue
+        header_line, header = _c_block_header(lines, open_line)
+        if re.search(r"\bif\s*\(", header) is None:
+            continue
+        open_paren = header.find("(")
+        close_paren = header.rfind(")")
+        if open_paren < 0 or close_paren <= open_paren:
+            continue
+        condition = header[open_paren + 1 : close_paren]
+        tokens = re.findall(
+            rf"\b{re.escape(length_name)}\s*!=\s*"
+            r"(?P<value>[A-Za-z_]\w*|0[xX][0-9A-Fa-f]+|\d+)",
+            condition,
+        )
+        if not tokens:
+            continue
+        remainder = re.sub(
+            rf"\b{re.escape(length_name)}\s*!=\s*"
+            r"(?:[A-Za-z_]\w*|0[xX][0-9A-Fa-f]+|\d+)",
+            "",
+            condition,
+        )
+        if re.sub(r"[\s&()]", "", remainder):
+            raise RuleNotApplicable("recv length guard has unsupported path semantics")
+        body = [
+            lines[index - 1].strip()
+            for index in range(open_line + 1, close_line)
+            if lines[index - 1].strip()
+            and not lines[index - 1].lstrip().startswith(("/*", "*", "//"))
+        ]
+        if not body or re.fullmatch(r"return\b[^;]*;", body[-1]) is None:
+            raise RuleNotApplicable("rejected recv lengths can fall through to the exact use")
+        values: dict[str, int] = {}
+        for token in tokens:
+            value = _c_integer_constant(lines, token)
+            if value is None or value < 0:
+                raise RuleNotApplicable("recv accepted size is not a nonnegative constant")
+            values[token] = value
+        guards.append(
+            {
+                "line": header_line,
+                "condition": " ".join(condition.split()),
+                "accepted_sizes": values,
+                "failure_exit_line": close_line - 1,
+            }
+        )
+    if not guards:
+        raise RuleNotApplicable("no terminating finite recv-length guard dominates the use")
+    minimum = min(
+        value
+        for guard in guards
+        for value in _mapping(guard.get("accepted_sizes")).values()
+    )
+    declaration_line = prefix[: declaration.start()].count("\n") + 1
+    return {
+        "object": object_name,
+        "object_type": declaration.group("type"),
+        "top_level_member": member_name,
+        "statement": " ".join(statement.split()),
+        "declaration_line": declaration_line,
+        "recv_line": recv_line,
+        "recv_call": " ".join(recv_call.group(0).split()),
+        "guard_lines": [int(item["line"]) for item in guards],
+        "length_guards": guards,
+        "accepted_size_sets": [dict(item["accepted_sizes"]) for item in guards],
+        "minimum_accepted_size": minimum,
+    }
+
+
+def _c_integer_constant(
+    lines: Sequence[str], name: str, seen: set[str] | None = None
+) -> int | None:
+    if re.fullmatch(r"0[xX][0-9A-Fa-f]+|\d+", name):
+        return int(name, 0)
+    visited = set(seen or ())
+    if name in visited:
+        return None
+    visited.add(name)
+    source = "\n".join(lines)
+    patterns = (
+        rf"(?m)^\s*#\s*define\s+{re.escape(name)}\s+(?P<value>[^\n/]+)",
+        rf"\b{re.escape(name)}\s*=\s*(?P<value>[^,\n}}]+)",
+    )
+    expression = ""
+    for pattern in patterns:
+        match = re.search(pattern, source)
+        if match is not None:
+            expression = match.group("value").strip()
+            break
+    if not expression:
+        return None
+    expression = re.sub(
+        r"sizeof\s*\(\s*(u?int)(8|16|32|64)_t\s*\)",
+        lambda match: str(int(match.group(2)) // 8),
+        expression,
+    )
+    expression = re.sub(r"(?<=\d)[uUlL]+\b", "", expression)
+    identifiers = sorted(set(re.findall(r"\b[A-Za-z_]\w*\b", expression)))
+    for identifier in identifiers:
+        value = _c_integer_constant(lines, identifier, visited)
+        if value is None:
+            return None
+        expression = re.sub(rf"\b{re.escape(identifier)}\b", str(value), expression)
+    try:
+        node = ast.parse(expression, mode="eval").body
+    except SyntaxError:
+        return None
+    return _evaluate_integer_ast(node)
+
+
+def _evaluate_integer_ast(node: ast.AST) -> int | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, int):
+        return int(node.value)
+    if isinstance(node, ast.UnaryOp) and isinstance(
+        node.op, (ast.UAdd, ast.USub, ast.Invert)
+    ):
+        operand = _evaluate_integer_ast(node.operand)
+        if operand is None:
+            return None
+        if isinstance(node.op, ast.UAdd):
+            return operand
+        if isinstance(node.op, ast.USub):
+            return -operand
+        return ~operand
+    if not isinstance(node, ast.BinOp):
+        return None
+    left = _evaluate_integer_ast(node.left)
+    right = _evaluate_integer_ast(node.right)
+    if left is None or right is None:
+        return None
+    if isinstance(node.op, ast.Add):
+        return left + right
+    if isinstance(node.op, ast.Sub):
+        return left - right
+    if isinstance(node.op, ast.Mult):
+        return left * right
+    if isinstance(node.op, ast.FloorDiv) and right:
+        return left // right
+    if isinstance(node.op, ast.Mod) and right:
+        return left % right
+    if isinstance(node.op, ast.LShift) and 0 <= right < 64:
+        return left << right
+    if isinstance(node.op, ast.RShift) and 0 <= right < 64:
+        return left >> right
+    if isinstance(node.op, ast.BitOr):
+        return left | right
+    if isinstance(node.op, ast.BitAnd):
+        return left & right
+    if isinstance(node.op, ast.BitXor):
+        return left ^ right
+    return None
 
 
 def _derive_c_unconditional_assignment(context: CampaignContext) -> dict[str, Any]:
@@ -1708,6 +3017,336 @@ def _derive_libubox_checked_calloc_outputs(context: CampaignContext) -> dict[str
     }
 
 
+def _derive_libubox_unchecked_calloc_output(context: CampaignContext) -> dict[str, Any]:
+    """Prove an immediate read of a calloc_a output on its failure path."""
+
+    if str(context.state.get("vulnerability_type") or "") != "uninitialized_memory_use":
+        raise RuleNotApplicable("candidate is not an uninitialized-use candidate")
+    source = _exact_source_context(context)
+    frame = _mapping(source.get("frame"))
+    lines = list(source.get("lines") or [])
+    line_number = int(frame.get("line") or 0)
+    function_name = str(frame.get("function") or "")
+    pattern = _unchecked_calloc_a_source_pattern(
+        lines,
+        function=function_name,
+        use_line=line_number,
+    )
+    exact_calls = _exact_unchecked_calloc_calls(context, source, pattern)
+    dependency = _libubox_calloc_contract(context, _mapping(source.get("mapping")))
+    if dependency.get("failure_result") != "NULL before auxiliary output assignment":
+        raise CertificateError("pinned calloc_a failure contract changed")
+
+    source_root = _contained_directory(
+        context.root,
+        Path(source["source_root"]),
+        "source checkout",
+    )
+    entry = _registered_ubus_string_entry_contract(
+        context,
+        source_root,
+        callee=function_name,
+    )
+    callback_binary = _registered_ubus_callback_binary_binding(
+        context,
+        source,
+        callback=str(entry["callback"]),
+        method=str(entry["method"]),
+    )
+    source_binding = _source_binding(
+        context,
+        source,
+        source_function=function_name,
+        source_lines=[int(pattern["allocation_line"]), line_number],
+    )
+    additional_refs = _deduplicated_source_refs(
+        context,
+        [
+            Path(str(entry["source_path"])),
+            context.root / str(_mapping(dependency["package_makefile"])["path"]),
+            context.root / str(_mapping(dependency["source_archive"])["path"]),
+        ],
+    )
+    return {
+        "rule_claim": (
+            "calloc_a can return before defining its auxiliary output, which the exact "
+            "strcpy call immediately consumes on a registered ubus request path"
+        ),
+        "operation_address": str(context.binding.get("address") or ""),
+        "source_binding": source_binding,
+        "source_excerpt": {
+            "path": source_binding["source_path"],
+            "sha256": source_binding["source_sha256"],
+            "function": function_name,
+            "allocation_line": int(pattern["allocation_line"]),
+            "allocation": str(pattern["allocation"]),
+            "use_line": line_number,
+            "use": str(pattern["statement"]),
+        },
+        "dependency_contract": dependency,
+        "additional_source_refs": additional_refs,
+        "exact_dataflow": exact_calls,
+        "entry_proof": {
+            **{key: value for key, value in entry.items() if key != "source_path"},
+            "callback_binary": callback_binary,
+            "boundary_control": (
+                "the registered ubus method parses a string from the request and passes it "
+                "as the allocation name, controlling both strlen and the later copy source"
+            ),
+        },
+        "failure_path": {
+            "allocation_result": str(pattern["primary"]),
+            "unassigned_output": str(pattern["output"]),
+            "allocator_result": "NULL",
+            "next_operation": "strcpy destination argument",
+            "feasibility": "calloc is permitted to return NULL",
+        },
+        "claims": {
+            "exact_operation": True,
+            "source_or_binary_binding": True,
+            "read_before_write": True,
+            "real_entry_reachability": True,
+            "attacker_or_boundary_control": True,
+        },
+    }
+
+
+def _unchecked_calloc_a_source_pattern(
+    lines: Sequence[str],
+    *,
+    function: str,
+    use_line: int,
+) -> dict[str, Any]:
+    """Recognize only an immediate strcpy through an unchecked calloc_a output."""
+
+    if not (0 < use_line <= len(lines)):
+        raise RuleNotApplicable("exact source use line is outside the source file")
+    statement = lines[use_line - 1].strip()
+    use = re.fullmatch(
+        r"(?:(?:[A-Za-z_]\w*(?:\s*(?:->|\.)\s*[A-Za-z_]\w*)+)\s*=\s*)?"
+        r"strcpy\s*\(\s*(?P<output>[A-Za-z_]\w*)\s*,\s*"
+        r"(?P<input>[A-Za-z_]\w*)\s*\)\s*;",
+        statement,
+    )
+    if use is None:
+        raise RuleNotApplicable("exact source statement is not a direct strcpy through a local")
+
+    prefix = _source_function_prefix(lines, function, use_line)
+    allocations = list(
+        re.finditer(
+            r"(?P<primary>[A-Za-z_]\w*)\s*=\s*calloc_a\s*"
+            r"\((?P<arguments>.*?)\)\s*;",
+            prefix,
+            re.DOTALL,
+        )
+    )
+    if not allocations:
+        raise RuleNotApplicable("source function has no preceding calloc_a assignment")
+    allocation = allocations[-1]
+    outputs = re.findall(r"&\s*([A-Za-z_]\w*)", allocation.group("arguments"))
+    output = use.group("output")
+    if output not in outputs:
+        raise RuleNotApplicable("strcpy destination is not a calloc_a auxiliary output")
+    if allocation.group("primary") == output:
+        raise RuleNotApplicable("calloc_a primary and auxiliary outputs are not distinct")
+
+    # The narrow rule intentionally admits no intervening statement.  A guard,
+    # fallback assignment, macro, or other control flow therefore remains for a
+    # different proof instead of being guessed safe or unsafe here.
+    if prefix[allocation.end() :].strip() != statement:
+        raise RuleNotApplicable("calloc_a output use is not the immediate next statement")
+    prefix_start_line = use_line - prefix.count("\n")
+    allocation_line = prefix_start_line + prefix[: allocation.start()].count("\n")
+    return {
+        "primary": allocation.group("primary"),
+        "output": output,
+        "input": use.group("input"),
+        "outputs": outputs,
+        "allocation_line": allocation_line,
+        "allocation": " ".join(allocation.group(0).split()),
+        "statement": statement,
+    }
+
+
+def _exact_unchecked_calloc_calls(
+    context: CampaignContext,
+    source: Mapping[str, Any],
+    pattern: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Bind the source failure path to the exact frozen calls and stack slot."""
+
+    if str(context.binding.get("pcode") or "") != "CALLIND":
+        raise RuleNotApplicable("exact candidate operation is not CALLIND")
+    candidate_range = _candidate_stack_range(context)
+    stack_offset = int(candidate_range["stack_offset"])
+    prepared_args = _mapping_rows(_mapping(context.binding.get("pcode_record")).get("args"))
+    if (
+        not prepared_args
+        or str(prepared_args[0].get("address_space") or "") != "stack"
+        or int(prepared_args[0].get("stack_offset") or 0) != stack_offset
+    ):
+        raise RuleNotApplicable("exact prepared call does not consume the candidate stack local")
+
+    function = _bound_export_function(context)
+    operations = _mapping_rows(function.get("pcode_operations"))
+    use_address = _hex_int(context.binding.get("address"), "unchecked output use address")
+    use_matches = [
+        (index, operation)
+        for index, operation in enumerate(operations)
+        if _operation_address_or_none(operation) == use_address
+        and str(operation.get("pcode") or "") == "CALLIND"
+    ]
+    if len(use_matches) != 1:
+        raise RuleNotApplicable("exact use address does not contain one CALLIND")
+    use_index, use_call = use_matches[0]
+    use_inputs = _mapping_rows(use_call.get("inputs"))
+    if (
+        len(use_inputs) < 3
+        or str(use_inputs[1].get("address_space") or "") != "stack"
+        or int(use_inputs[1].get("stack_offset") or 0) != stack_offset
+    ):
+        raise RuleNotApplicable("exact strcpy destination is not the candidate stack local")
+    use_import = _exact_import_call(context, operations, use_call, expected="strcpy")
+
+    allocations: list[dict[str, Any]] = []
+    seen_addresses: set[int] = set()
+    for index, operation in enumerate(operations[:use_index]):
+        if str(operation.get("pcode") or "") != "CALLIND":
+            continue
+        address = _operation_address_or_none(operation)
+        if address is None or address in seen_addresses:
+            continue
+        seen_addresses.add(address)
+        try:
+            contexts = _source_contexts_for_operation(context, _hex(address))
+        except RuleNotApplicable:
+            continue
+        if not any(
+            Path(item["source_path"]).resolve() == Path(source["source_path"]).resolve()
+            and int(_mapping(item.get("frame")).get("line") or 0)
+            == int(pattern["allocation_line"])
+            for item in contexts
+        ):
+            continue
+        try:
+            imported = _exact_import_call(context, operations, operation, expected="__calloc_a")
+            pointer_argument = _stack_pointer_call_argument(
+                operations,
+                call_index=index,
+                call=operation,
+                stack_offset=stack_offset,
+            )
+        except RuleNotApplicable:
+            continue
+        allocations.append(
+            {
+                "call_address": _hex(address),
+                "import": imported,
+                "auxiliary_output_argument": pointer_argument,
+            }
+        )
+    if len(allocations) != 1:
+        raise RuleNotApplicable("source allocation does not bind to one exact __calloc_a call")
+    return {
+        "candidate_stack_range": candidate_range,
+        "allocator_call": allocations[0],
+        "use_call": {
+            "call_address": _hex(use_address),
+            "import": use_import,
+            "destination_argument": use_inputs[1],
+            "source_argument": use_inputs[2],
+        },
+        "operation_order": "__calloc_a CALL precedes the exact strcpy CALLIND",
+    }
+
+
+def _exact_import_call(
+    context: CampaignContext,
+    operations: Sequence[Mapping[str, Any]],
+    call: Mapping[str, Any],
+    *,
+    expected: str,
+) -> dict[str, Any]:
+    inputs = _mapping_rows(call.get("inputs"))
+    if str(call.get("pcode") or "") != "CALLIND" or not inputs:
+        raise RuleNotApplicable("operation is not an indirect call with a target")
+    address = _hex_int(call.get("operation_address"), "import call address")
+    target = inputs[0]
+    casts = [
+        operation
+        for operation in operations
+        if _operation_address_or_none(operation) == address
+        and str(operation.get("pcode") or "") == "CAST"
+        and _mapping(operation.get("output")) == target
+    ]
+    if len(casts) != 1:
+        raise RuleNotApplicable("indirect call target has no unique import CAST")
+    cast_inputs = _mapping_rows(casts[0].get("inputs"))
+    if len(cast_inputs) != 1 or str(cast_inputs[0].get("address_space") or "") != "ram":
+        raise RuleNotApplicable("indirect call CAST is not loaded from a static pointer slot")
+    relocation = _dynamic_function_relocation(
+        context,
+        _hex_int(cast_inputs[0].get("address"), "import pointer address"),
+    )
+    if str(relocation.get("symbol") or "") != expected:
+        raise RuleNotApplicable(f"indirect call resolves to {relocation.get('symbol')}, not {expected}")
+    return {
+        "symbol": expected,
+        "relocation": relocation,
+        "target": target,
+        "cast_input": cast_inputs[0],
+    }
+
+
+def _stack_pointer_call_argument(
+    operations: Sequence[Mapping[str, Any]],
+    *,
+    call_index: int,
+    call: Mapping[str, Any],
+    stack_offset: int,
+) -> dict[str, Any]:
+    matches: list[dict[str, Any]] = []
+    for argument_index, argument in enumerate(_mapping_rows(call.get("inputs"))[1:]):
+        identity = _varnode_identity(argument)
+        if identity is None:
+            continue
+        definitions = [
+            operation
+            for operation in operations[:call_index]
+            if _varnode_identity(_mapping(operation.get("output"))) == identity
+        ]
+        if not definitions or str(definitions[-1].get("pcode") or "") != "PTRSUB":
+            continue
+        constants = [
+            int(item["constant"])
+            for item in _mapping_rows(definitions[-1].get("inputs"))
+            if str(item.get("address_space") or "") == "const"
+            and isinstance(item.get("constant"), int)
+        ]
+        if constants != [stack_offset]:
+            continue
+        matches.append(
+            {
+                "argument_index": argument_index,
+                "argument": argument,
+                "pointer_definition_address": str(
+                    definitions[-1].get("operation_address") or ""
+                ),
+                "stack_offset": stack_offset,
+            }
+        )
+    if len(matches) != 1 or int(matches[0]["argument_index"]) == 0:
+        raise RuleNotApplicable("calloc call has no unique auxiliary stack-output pointer")
+    return matches[0]
+
+
+def _operation_address_or_none(operation: Mapping[str, Any]) -> int | None:
+    try:
+        return int(str(operation.get("operation_address") or ""), 0)
+    except (TypeError, ValueError):
+        return None
+
+
 def _derive_libubox_foreach_initialization(context: CampaignContext) -> dict[str, Any]:
     if str(context.state.get("vulnerability_type") or "") != "uninitialized_memory_use":
         raise RuleNotApplicable("candidate is not an uninitialized-use candidate")
@@ -1770,6 +3409,10 @@ def _derive_c_checked_api_output(context: CampaignContext) -> dict[str, Any]:
     if str(context.state.get("vulnerability_type") or "") != "uninitialized_memory_use":
         raise RuleNotApplicable("candidate is not an uninitialized-use candidate")
     source = _exact_source_context(context)
+    try:
+        return _derive_c_stat_family_output_use(context, source)
+    except RuleNotApplicable:
+        pass
     frame = source["frame"]
     lines = source["lines"]
     line_number = int(frame["line"])
@@ -1859,6 +3502,803 @@ def _derive_c_checked_api_output(context: CampaignContext) -> dict[str, Any]:
             "source_or_binary_binding": True,
             "all_path_initialization": True,
         },
+    }
+
+
+def _derive_c_checked_network_parse_output(
+    context: CampaignContext,
+) -> dict[str, Any]:
+    if str(context.state.get("vulnerability_type") or "") != "uninitialized_memory_use":
+        raise RuleNotApplicable("candidate is not an uninitialized-use candidate")
+    source = _exact_source_context(context)
+    frame = _mapping(source.get("frame"))
+    lines = source["lines"]
+    line_number = int(frame.get("line") or 0)
+    statement = _c_statement_from_line(lines, line_number)
+    assignment = re.fullmatch(
+        r"(?P<destination>[^;=]+)\s*=\s*(?P<output>[A-Za-z_]\w*)\s*;",
+        " ".join(statement.split()),
+    )
+    if assignment is None:
+        raise RuleNotApplicable("exact source statement is not a parsed-address assignment")
+    output = assignment.group("output")
+    function_prefix = _source_function_prefix(
+        lines, str(frame.get("function") or ""), line_number
+    )
+    declaration = re.search(
+        rf"\bstruct\s+(?P<type>in_addr|in6_addr)\s+{re.escape(output)}\s*;",
+        function_prefix,
+    )
+    if declaration is None:
+        raise RuleNotApplicable("parsed address is not a local network-address object")
+    guards: list[dict[str, Any]] = []
+    for open_line, close_line in _c_brace_pairs(lines):
+        if not (open_line < line_number <= close_line):
+            continue
+        header_line, header = _c_block_header(lines, open_line)
+        for _offset, condition in _c_if_conditions(header):
+            compact = " ".join(condition.split())
+            aton = re.fullmatch(
+                rf"inet_aton\s*\([^,]+,\s*&\s*{re.escape(output)}\s*\)"
+                r"\s*(?:!=\s*0|>\s*0)",
+                compact,
+            )
+            pton = re.fullmatch(
+                rf"inet_pton\s*\([^,]+,[^,]+,\s*&\s*{re.escape(output)}\s*\)"
+                r"\s*(?:==\s*1|>\s*0)",
+                compact,
+            )
+            if aton is not None:
+                guards.append({"api": "inet_aton", "line": header_line, "condition": compact})
+            if pton is not None:
+                guards.append({"api": "inet_pton", "line": header_line, "condition": compact})
+    if len(guards) != 1:
+        raise RuleNotApplicable("no unique successful address-parser guard encloses the use")
+    guard = guards[0]
+    dependency = _sdk_api_contract(
+        context,
+        _mapping(source.get("mapping")),
+        api=str(guard["api"]),
+    )
+    source_binding = _source_binding(
+        context,
+        source,
+        source_function=str(frame["function"]),
+        source_lines=[int(guard["line"]), line_number],
+    )
+    return {
+        "rule_claim": (
+            "the exact parsed-address assignment is reachable only after the network "
+            "parser reports successful initialization of the complete local object"
+        ),
+        "operation_address": str(context.binding.get("address") or ""),
+        "source_binding": source_binding,
+        "source_excerpt": {
+            "path": source_binding["source_path"],
+            "sha256": source_binding["source_sha256"],
+            "function": str(frame["function"]),
+            "line": line_number,
+            "statement": " ".join(statement.split()),
+            "guard": dict(guard),
+        },
+        "dependency_contract": dependency,
+        "additional_source_refs": [
+            dependency["sdk_archive"],
+            dependency["api_header"],
+        ],
+        "initialization": {
+            "output": output,
+            "type": f"struct {declaration.group('type')}",
+            "api": str(guard["api"]),
+            "path_coverage": "the exact assignment is inside the parser's success-only branch",
+        },
+        "claims": {
+            "exact_operation": True,
+            "source_or_binary_binding": True,
+            "all_path_initialization": True,
+        },
+    }
+
+
+def _derive_c_api_output_address(context: CampaignContext) -> dict[str, Any]:
+    """Refute a value-read claim when an API receives only a local's address."""
+
+    if str(context.state.get("vulnerability_type") or "") != "uninitialized_memory_use":
+        raise RuleNotApplicable("candidate is not an uninitialized-use candidate")
+    if str(context.binding.get("pcode") or "") not in {"CALL", "CALLIND"}:
+        raise RuleNotApplicable("exact operation is not an API call")
+    source = _exact_source_context(context)
+    frame = source["frame"]
+    lines = source["lines"]
+    line_number = int(frame["line"])
+    statement = _c_statement_from_line(lines, line_number)
+    match = re.search(
+        r"\b(?P<api>stat|lstat)\s*\([^;]*?&\s*(?P<output>[A-Za-z_]\w*)\b[^;]*\)",
+        statement,
+        re.DOTALL,
+    )
+    if match is None:
+        raise RuleNotApplicable("exact source call has no supported write-only output argument")
+    declaration = re.search(
+        rf"\bstruct\s+stat\s+{re.escape(match.group('output'))}\s*;",
+        _source_function_prefix(lines, str(frame["function"]), line_number),
+    )
+    if declaration is None:
+        raise RuleNotApplicable("stat-family output is not a declared local struct stat")
+    candidate_range = _candidate_stack_range(context)
+    compiled_object = _compiled_stat_output_object(
+        context,
+        source,
+        output=match.group("output"),
+        source_line=line_number,
+    )
+    if not _range_contains(compiled_object, candidate_range):
+        raise RuleNotApplicable("candidate local is outside the exact stat-family output object")
+    dependency = _sdk_api_contract(
+        context,
+        _mapping(source.get("mapping")),
+        api=match.group("api"),
+    )
+    source_binding = _source_binding(
+        context,
+        source,
+        source_function=str(frame["function"]),
+        source_lines=[line_number],
+    )
+    return {
+        "rule_claim": "the exact call passes the local object's address as a write-only API output",
+        "operation_address": str(context.binding.get("address") or ""),
+        "source_binding": source_binding,
+        "source_excerpt": {
+            "path": source_binding["source_path"],
+            "sha256": source_binding["source_sha256"],
+            "function": str(frame["function"]),
+            "line": line_number,
+            "statement": " ".join(statement.split()),
+        },
+        "dependency_contract": dependency,
+        "additional_source_refs": [
+            dependency["sdk_archive"],
+            dependency["api_header"],
+        ],
+        "output_argument": {
+            "api": match.group("api"),
+            "object": match.group("output"),
+            "expression": f"&{match.group('output')}",
+            "runtime_value_read": False,
+            "success_effect": "initializes the caller-provided struct stat",
+            "compiled_object": compiled_object,
+            "candidate_range": candidate_range,
+        },
+        "claims": {
+            "exact_operation": True,
+            "source_or_binary_binding": True,
+            "semantics_absent": True,
+        },
+    }
+
+
+def _derive_c_stat_call_effect(context: CampaignContext) -> dict[str, Any]:
+    """Refute stat output locals represented only by call-effect annotations."""
+
+    if str(context.state.get("vulnerability_type") or "") != "uninitialized_memory_use":
+        raise RuleNotApplicable("candidate is not an uninitialized-use candidate")
+    call_effect = _call_effect_local_proof(context)
+    source = _exact_source_context(context)
+    frame = _mapping(source.get("frame"))
+    lines = source["lines"]
+    line_number = int(frame.get("line") or 0)
+    statement = _c_statement_from_line(lines, line_number)
+    calls = list(
+        re.finditer(
+            r"\b(?P<api>stat|lstat|fstat)\s*\([^,;]+,\s*&\s*"
+            r"(?P<output>[A-Za-z_]\w*)\s*\)",
+            statement,
+        )
+    )
+    call_count = len(re.findall(r"\b(?:stat|lstat|fstat)\s*\(", statement))
+    if not calls or len(calls) != call_count:
+        raise RuleNotApplicable("exact source statement has no stat-family output address")
+    function_prefix = _source_function_prefix(
+        lines, str(frame.get("function") or ""), line_number
+    )
+    declarations = re.findall(r"\bstruct\s+stat\s+([^;]+);", function_prefix)
+    outputs = sorted({match.group("output") for match in calls})
+    for output in outputs:
+        if not any(
+            re.search(rf"(?:^|,)\s*{re.escape(output)}\s*(?:,|$)", declarators)
+            for declarators in declarations
+        ):
+            raise RuleNotApplicable("stat-family output is not a declared local struct stat")
+    dependencies = [
+        _sdk_api_contract(
+            context,
+            _mapping(source.get("mapping")),
+            api=api,
+        )
+        for api in sorted({match.group("api") for match in calls})
+    ]
+    source_binding = _source_binding(
+        context,
+        source,
+        source_function=str(frame["function"]),
+        source_lines=[line_number],
+    )
+    return {
+        "rule_claim": (
+            "the alleged local read is only a Ghidra call-effect annotation while "
+            "each source stat-family operand passes a local object's address"
+        ),
+        "operation_address": str(context.binding.get("address") or ""),
+        "source_binding": source_binding,
+        "source_excerpt": {
+            "path": source_binding["source_path"],
+            "sha256": source_binding["source_sha256"],
+            "function": str(frame["function"]),
+            "line": line_number,
+            "statement": " ".join(statement.split()),
+            "output_objects": outputs,
+            "apis": sorted({match.group("api") for match in calls}),
+        },
+        "dependency_contracts": dependencies,
+        "high_pcode": call_effect,
+        "claims": {
+            "exact_operation": True,
+            "source_or_binary_binding": True,
+            "semantics_absent": True,
+        },
+    }
+
+
+def _call_effect_local_proof(context: CampaignContext) -> dict[str, Any]:
+    if str(context.binding.get("pcode") or "") not in {"CALL", "CALLIND"}:
+        raise RuleNotApplicable("exact operation is not a runtime call")
+    candidate_local = str(_mapping(context.state.get("source")).get("expression") or "")
+    if not re.fullmatch(r"(?:local|uStack)_[0-9A-Fa-f]+", candidate_local):
+        raise RuleNotApplicable("candidate does not identify one decompiler stack local")
+    function = _bound_export_function(context)
+    operation_address = str(context.binding.get("address") or "").lower()
+    operations = [
+        item
+        for item in _mapping_rows(function.get("pcode_operations"))
+        if str(item.get("operation_address") or "").lower() == operation_address
+    ]
+    annotations = []
+    for operation in operations:
+        if str(operation.get("pcode") or "") != "INDIRECT":
+            continue
+        inputs = _mapping_rows(operation.get("inputs"))
+        output = _mapping(operation.get("output"))
+        if (
+            len(inputs) == 2
+            and str(inputs[0].get("address_space") or "") == "stack"
+            and str(inputs[0].get("var_name") or "") == candidate_local
+            and str(output.get("address_space") or "") == "stack"
+            and str(output.get("var_name") or "") == candidate_local
+        ):
+            annotations.append(operation)
+    if len(annotations) != 1:
+        raise RuleNotApplicable("candidate local is not one exact call-effect annotation")
+    calls = [
+        item
+        for item in operations
+        if str(item.get("pcode") or "") == str(context.binding.get("pcode") or "")
+    ]
+    if len(calls) != 1:
+        raise CertificateError("exact runtime call is absent from high p-code")
+    call = calls[0]
+    runtime_inputs = _mapping_rows(call.get("inputs"))[1:]
+    if any(
+        str(item.get("address_space") or "") == "stack"
+        and str(item.get("var_name") or "") == candidate_local
+        for item in runtime_inputs
+    ):
+        raise RuleNotApplicable("candidate local is a runtime call value argument")
+    return {
+        "call_opcode": str(call.get("pcode") or ""),
+        "candidate_local": candidate_local,
+        "call_effect_annotation": annotations[0],
+        "candidate_local_is_runtime_argument": False,
+    }
+
+
+def _derive_c_formatted_input_output(context: CampaignContext) -> dict[str, Any]:
+    """Refute a local-value read when scanf receives only its output address."""
+
+    if str(context.state.get("vulnerability_type") or "") != "uninitialized_memory_use":
+        raise RuleNotApplicable("candidate is not an uninitialized-use candidate")
+    if str(context.binding.get("pcode") or "") not in {"CALL", "CALLIND"}:
+        raise RuleNotApplicable("exact operation is not a formatted-input call")
+    source = _exact_source_context(context)
+    frame = _mapping(source.get("frame"))
+    lines = source["lines"]
+    line_number = int(frame.get("line") or 0)
+    statement = _c_statement_from_line(lines, line_number)
+    calls: list[tuple[str, list[str]]] = []
+    for api in ("fscanf", "sscanf", "scanf"):
+        arguments = _c_call_arguments(statement, api)
+        if arguments is not None:
+            calls.append((api, arguments))
+    if len(calls) != 1:
+        raise RuleNotApplicable("exact source statement has no unique scanf-family call")
+    api, arguments = calls[0]
+    fixed_count = 1 if api == "scanf" else 2
+    if len(arguments) <= fixed_count:
+        raise RuleNotApplicable("scanf-family call has no output arguments")
+    format_index = 0 if api == "scanf" else 1
+    format_literals = re.findall(r'"((?:\\.|[^"\\])*)"', arguments[format_index])
+    if not format_literals:
+        raise RuleNotApplicable("scanf-family format is not a source literal")
+    format_text = "".join(format_literals)
+    conversion_count = _scanf_output_conversion_count(format_text)
+    outputs = arguments[fixed_count:]
+    if conversion_count != len(outputs):
+        raise RuleNotApplicable("scanf-family format/output arity is not exact")
+    function_prefix = _source_function_prefix(
+        lines, str(frame.get("function") or ""), line_number
+    )
+    normalized_outputs: list[str] = []
+    for output in outputs:
+        compact = " ".join(output.split())
+        address = re.fullmatch(r"&\s*([A-Za-z_]\w*)", compact)
+        array = re.fullmatch(r"([A-Za-z_]\w*)", compact)
+        if address is not None:
+            normalized_outputs.append(f"&{address.group(1)}")
+            continue
+        if array is not None and re.search(
+            rf"\b{re.escape(array.group(1))}\s*\[[^\]]+\]",
+            function_prefix,
+        ):
+            normalized_outputs.append(array.group(1))
+            continue
+        raise RuleNotApplicable("scanf-family variadic argument is not a local output address")
+
+    call_effect = _call_effect_local_proof(context)
+    dependency = _sdk_api_contract(
+        context, _mapping(source.get("mapping")), api=api
+    )
+    source_binding = _source_binding(
+        context,
+        source,
+        source_function=str(frame["function"]),
+        source_lines=[line_number],
+    )
+    return {
+        "rule_claim": (
+            "the alleged local read is only a Ghidra call-effect annotation while "
+            "the scanf variadic operands are source-level output addresses"
+        ),
+        "operation_address": str(context.binding.get("address") or ""),
+        "source_binding": source_binding,
+        "source_excerpt": {
+            "path": source_binding["source_path"],
+            "sha256": source_binding["source_sha256"],
+            "function": str(frame["function"]),
+            "line": line_number,
+            "statement": " ".join(statement.split()),
+            "api": api,
+            "format": format_text,
+            "output_arguments": normalized_outputs,
+        },
+        "dependency_contract": dependency,
+        "high_pcode": call_effect,
+        "claims": {
+            "exact_operation": True,
+            "source_or_binary_binding": True,
+            "semantics_absent": True,
+        },
+    }
+
+
+def _c_call_arguments(statement: str, function: str) -> list[str] | None:
+    match = re.search(rf"\b{re.escape(function)}\s*\(", statement)
+    if match is None:
+        return None
+    open_index = statement.find("(", match.start())
+    depth = 1
+    cursor = open_index + 1
+    quote = ""
+    argument_start = cursor
+    arguments: list[str] = []
+    while cursor < len(statement) and depth:
+        character = statement[cursor]
+        if quote:
+            if character == "\\":
+                cursor += 2
+                continue
+            if character == quote:
+                quote = ""
+            cursor += 1
+            continue
+        if character in {"'", '"'}:
+            quote = character
+        elif character in "([{":
+            depth += 1
+        elif character in ")]}":
+            depth -= 1
+            if depth == 0:
+                arguments.append(statement[argument_start:cursor].strip())
+                break
+        elif character == "," and depth == 1:
+            arguments.append(statement[argument_start:cursor].strip())
+            argument_start = cursor + 1
+        cursor += 1
+    if depth != 0 or any(not item for item in arguments):
+        return None
+    return arguments
+
+
+def _scanf_output_conversion_count(format_text: str) -> int:
+    count = 0
+    cursor = 0
+    while cursor < len(format_text):
+        if format_text[cursor] != "%":
+            cursor += 1
+            continue
+        cursor += 1
+        if cursor < len(format_text) and format_text[cursor] == "%":
+            cursor += 1
+            continue
+        suppressed = cursor < len(format_text) and format_text[cursor] == "*"
+        if suppressed:
+            cursor += 1
+        while cursor < len(format_text) and format_text[cursor] in "0123456789'hljztL":
+            cursor += 1
+        if cursor >= len(format_text):
+            raise RuleNotApplicable("scanf-family format has an incomplete conversion")
+        if format_text[cursor] == "[":
+            cursor += 1
+            if cursor < len(format_text) and format_text[cursor] == "^":
+                cursor += 1
+            if cursor < len(format_text) and format_text[cursor] == "]":
+                cursor += 1
+            while cursor < len(format_text) and format_text[cursor] != "]":
+                cursor += 1
+            if cursor >= len(format_text):
+                raise RuleNotApplicable("scanf-family scanset is unterminated")
+        if not suppressed:
+            count += 1
+        cursor += 1
+    return count
+
+
+def _derive_c_stat_family_output_use(
+    context: CampaignContext, source: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Prove a struct stat field use is restricted to successful API paths."""
+
+    frame = source["frame"]
+    lines = source["lines"]
+    line_number = int(frame["line"])
+    statement = _c_statement_from_line(lines, line_number)
+    function_name = str(frame["function"])
+    function_prefix = _source_function_prefix(lines, function_name, line_number)
+    declarations = re.findall(
+        r"\bstruct\s+stat\s+([A-Za-z_]\w*)\s*;",
+        function_prefix,
+    )
+    outputs = [name for name in declarations if re.search(rf"\b{re.escape(name)}\b", statement)]
+    if not outputs:
+        raise RuleNotApplicable("exact source use does not identify a local struct stat output")
+    candidate_range = _candidate_stack_range(context)
+    matched_outputs: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+    for output_name in outputs:
+        call_blocks = _stat_family_failure_blocks(lines, output_name, line_number)
+        if not call_blocks:
+            continue
+        compiled = _compiled_stat_output_object(
+            context,
+            source,
+            output=output_name,
+            source_line=int(call_blocks[0]["header_line"]),
+        )
+        if _range_contains(compiled, candidate_range):
+            matched_outputs.append((output_name, call_blocks[0], compiled))
+    if len(matched_outputs) != 1:
+        raise RuleNotApplicable("candidate stack range does not select one checked struct stat output")
+    output, initialization, compiled_object = matched_outputs[0]
+    path_proof = _stat_output_path_proof(
+        lines,
+        output=output,
+        use_line=line_number,
+        initialization=initialization,
+    )
+    if path_proof is None:
+        raise RuleNotApplicable("stat-family failure path can reach the exact source use")
+    apis = list(initialization["apis"])
+    dependencies = [
+        _sdk_api_contract(context, _mapping(source.get("mapping")), api=api)
+        for api in apis
+    ]
+    source_lines = sorted(
+        {
+            line_number,
+            int(initialization["header_line"]),
+            *[int(item) for item in path_proof["evidence_lines"]],
+        }
+    )
+    source_binding = _source_binding(
+        context,
+        source,
+        source_function=function_name,
+        source_lines=source_lines,
+    )
+    additional_refs: dict[tuple[str, str], dict[str, Any]] = {}
+    for dependency in dependencies:
+        for key in ("sdk_archive", "api_header"):
+            reference = dict(_mapping(dependency.get(key)))
+            additional_refs[(str(reference.get("path") or ""), key)] = reference
+    return {
+        "rule_claim": "every path to the exact struct stat field use follows a successful stat-family call",
+        "operation_address": str(context.binding.get("address") or ""),
+        "source_binding": source_binding,
+        "source_excerpt": {
+            "path": source_binding["source_path"],
+            "sha256": source_binding["source_sha256"],
+            "function": function_name,
+            "line": line_number,
+            "statement": " ".join(statement.split()),
+            "initialization_call": initialization["header"],
+        },
+        "dependency_contracts": dependencies,
+        "additional_source_refs": [additional_refs[key] for key in sorted(additional_refs)],
+        "initialization": {
+            "output": output,
+            "apis": apis,
+            "success_return": 0,
+            "path_proof": path_proof,
+            "compiled_object": compiled_object,
+            "candidate_range": candidate_range,
+        },
+        "claims": {
+            "exact_operation": True,
+            "source_or_binary_binding": True,
+            "all_path_initialization": True,
+        },
+    }
+
+
+def _candidate_stack_range(context: CampaignContext) -> dict[str, Any]:
+    affected = _mapping(context.state.get("affected_object"))
+    label = str(affected.get("label") or affected.get("identity") or "").rsplit(":", 1)[-1]
+    match = re.fullmatch(r"local_([0-9a-fA-F]+)", label)
+    if match is None:
+        raise RuleNotApplicable("candidate affected object is not an exact decompiler stack local")
+    offset = -int(match.group(1), 16)
+    width = int(_mapping(context.state.get("type_facts")).get("read_width_bytes") or 0)
+    if width <= 0:
+        width = int(context.binding.get("width_bytes") or 0)
+    if width <= 0:
+        raise RuleNotApplicable("candidate stack local has no positive access width")
+    return {
+        "label": label,
+        "stack_offset": offset,
+        "size_bytes": width,
+        "end_stack_offset": offset + width,
+    }
+
+
+def _compiled_stat_output_object(
+    context: CampaignContext,
+    source: Mapping[str, Any],
+    *,
+    output: str,
+    source_line: int,
+) -> dict[str, Any]:
+    function = _bound_export_function(context)
+    operations = _mapping_rows(function.get("pcode_operations"))
+    call_matches: list[tuple[int, Mapping[str, Any]]] = []
+    seen_addresses: set[int] = set()
+    for index, operation in enumerate(operations):
+        if str(operation.get("pcode") or "") not in {"CALL", "CALLIND"}:
+            continue
+        address = _hex_int(operation.get("operation_address"), "stat-family call address")
+        if address in seen_addresses:
+            continue
+        seen_addresses.add(address)
+        try:
+            contexts = _source_contexts_for_operation(context, _hex(address))
+        except RuleNotApplicable:
+            continue
+        if any(
+            Path(item["source_path"]).resolve() == Path(source["source_path"]).resolve()
+            and int(_mapping(item.get("frame")).get("line") or 0) == source_line
+            for item in contexts
+        ):
+            call_matches.append((index, operation))
+    if len(call_matches) != 1:
+        raise RuleNotApplicable("source stat-family initializer does not map to one exact CALL")
+    call_index, call = call_matches[0]
+    inputs = _mapping_rows(call.get("inputs"))
+    if len(inputs) < 2:
+        raise RuleNotApplicable("exact stat-family CALL has no output-pointer argument")
+    pointer = inputs[-1]
+    pointer_space = str(pointer.get("address_space") or "")
+    pointer_address = str(pointer.get("address") or "").lower()
+    definitions = [
+        operation
+        for operation in operations[:call_index]
+        if str(_mapping(operation.get("output")).get("address_space") or "") == pointer_space
+        and str(_mapping(operation.get("output")).get("address") or "").lower() == pointer_address
+    ]
+    if not definitions or str(definitions[-1].get("pcode") or "") != "PTRSUB":
+        raise RuleNotApplicable("stat-family output pointer lacks an exact stack PTRSUB")
+    definition_inputs = _mapping_rows(definitions[-1].get("inputs"))
+    constants = [
+        int(item["constant"])
+        for item in definition_inputs
+        if str(item.get("address_space") or "") == "const"
+        and isinstance(item.get("constant"), int)
+    ]
+    if len(constants) != 1 or constants[0] >= 0:
+        raise RuleNotApplicable("stat-family output PTRSUB has no unique negative stack base")
+    mapping = _reference_mapping(context)
+    layout = _reference_struct_layout(context, mapping, "stat")
+    base = constants[0]
+    size = int(layout["size_bytes"])
+    return {
+        "source_object": output,
+        "call_address": str(call.get("operation_address") or ""),
+        "pointer_definition_address": str(definitions[-1].get("operation_address") or ""),
+        "stack_offset": base,
+        "size_bytes": size,
+        "end_stack_offset": base + size,
+        "layout": layout,
+    }
+
+
+def _range_contains(container: Mapping[str, Any], candidate: Mapping[str, Any]) -> bool:
+    return (
+        int(container.get("stack_offset") or 0)
+        <= int(candidate.get("stack_offset") or 0)
+        and int(candidate.get("end_stack_offset") or 0)
+        <= int(container.get("end_stack_offset") or 0)
+    )
+
+
+def _c_statement_from_line(lines: Sequence[str], line_number: int) -> str:
+    statement_lines = [lines[line_number - 1].strip()]
+    cursor = line_number
+    while ";" not in " ".join(statement_lines) and cursor < min(len(lines), line_number + 12):
+        statement_lines.append(lines[cursor].strip())
+        cursor += 1
+    return " ".join(item for item in statement_lines if item)
+
+
+def _stat_family_failure_blocks(
+    lines: Sequence[str], output: str, use_line: int
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    output_pattern = re.compile(rf"&\s*{re.escape(output)}\b")
+    api_pattern = re.compile(r"\b(?:stat|lstat)\b")
+    for open_line, close_line in _c_brace_pairs(lines):
+        if open_line >= use_line:
+            continue
+        header_line, header = _c_block_header(lines, open_line)
+        if (
+            not re.search(r"\bif\s*\(", header)
+            or output_pattern.search(header) is None
+            or api_pattern.search(header) is None
+            or re.search(r"(?:<\s*0|!=\s*0)", header) is None
+        ):
+            continue
+        apis = sorted(set(api_pattern.findall(header)))
+        results.append(
+            {
+                "header_line": header_line,
+                "header": " ".join(header.split()),
+                "failure_open_line": open_line,
+                "failure_close_line": close_line,
+                "apis": apis,
+            }
+        )
+    return sorted(results, key=lambda item: int(item["header_line"]))
+
+
+def _stat_output_path_proof(
+    lines: Sequence[str],
+    *,
+    output: str,
+    use_line: int,
+    initialization: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    failure_open = int(initialization["failure_open_line"])
+    failure_close = int(initialization["failure_close_line"])
+
+    # A use inside the `else` paired with the failing call is necessarily on
+    # the successful return path.
+    pairs = _c_brace_pairs(lines)
+    success_blocks: list[tuple[int, int, int]] = []
+    for open_line, close_line in pairs:
+        header_line, header = _c_block_header(lines, open_line)
+        if "else" in header and failure_close in {header_line, open_line}:
+            success_blocks.append((open_line, close_line, header_line))
+        if (
+            open_line < use_line <= close_line
+            and "else" in header
+            and failure_close in {header_line, open_line}
+        ):
+            return {
+                "kind": "successful_else_branch",
+                "evidence_lines": [failure_open, failure_close, header_line],
+            }
+
+    # A success flag initialized false and assigned true only in the success
+    # branch can guard later reads of the output object.
+    function_prefix = "\n".join(lines[:use_line])
+    for open_line, close_line in pairs:
+        if not (open_line < use_line <= close_line):
+            continue
+        header_line, header = _c_block_header(lines, open_line)
+        flag_match = re.search(r"\bif\s*\(\s*(?P<flag>[A-Za-z_]\w*)\s*\)", header)
+        if flag_match is None:
+            continue
+        flag = flag_match.group("flag")
+        if re.search(rf"\b{re.escape(flag)}\s*=\s*0\s*;", function_prefix) is None:
+            continue
+        true_assignments = [
+            number
+            for number in range(1, use_line + 1)
+            if re.search(rf"\b{re.escape(flag)}\s*=\s*1\s*;", lines[number - 1])
+        ]
+        success_assignments = [
+            number
+            for number in true_assignments
+            if any(open_line < number < close_line for open_line, close_line, _ in success_blocks)
+        ]
+        if len(true_assignments) == 1 and len(success_assignments) == 1:
+            return {
+                "kind": "success_flag_guard",
+                "flag": flag,
+                "evidence_lines": [
+                    failure_open,
+                    failure_close,
+                    success_assignments[0],
+                    header_line,
+                ],
+            }
+
+    # Otherwise the failure block itself must end in return, and every goto
+    # must jump past this use or reach an unconditional return before it.
+    body_lines = [
+        (number, lines[number - 1].strip())
+        for number in range(failure_open + 1, failure_close)
+        if lines[number - 1].strip() and not lines[number - 1].lstrip().startswith(("/*", "*", "//"))
+    ]
+    if not body_lines or re.fullmatch(r"return\b[^;]*;", body_lines[-1][1]) is None:
+        return None
+    evidence_lines = [failure_open, body_lines[-1][0], failure_close]
+    function_end = next(
+        (
+            close_line
+            for open_line, close_line in pairs
+            if open_line <= failure_open < use_line <= close_line
+            and re.search(r"\b[A-Za-z_]\w*\s*\(", _c_block_header(lines, open_line)[1])
+        ),
+        len(lines),
+    )
+    for goto_line in range(failure_open + 1, failure_close):
+        goto_match = re.search(r"\bgoto\s+([A-Za-z_]\w*)\s*;", lines[goto_line - 1])
+        if goto_match is None:
+            continue
+        label_line = _first_matching_line(
+            lines,
+            failure_close + 1,
+            function_end,
+            rf"^\s*{re.escape(goto_match.group(1))}\s*:",
+        )
+        if label_line is None:
+            return None
+        evidence_lines.extend([goto_line, label_line])
+        if label_line < use_line:
+            return_line = _first_matching_line(lines, label_line + 1, use_line - 1, r"^\s*return\b")
+            if return_line is None:
+                return None
+            evidence_lines.append(return_line)
+    return {
+        "kind": "failure_routes_terminate_or_skip_use",
+        "output": output,
+        "evidence_lines": sorted(set(evidence_lines)),
     }
 
 
@@ -1978,6 +4418,8 @@ def _derive_c_array_object(context: CampaignContext) -> dict[str, Any]:
     capacity = ""
     object_name = ""
     storage = "string_literal"
+    declaration_lines: list[int] = []
+    declaration_alternatives: list[str] = []
     if literal is not None:
         object_name = literal.group("literal")
         capacity = str(len(bytes(literal.group("literal")[1:-1], "utf-8")) + 1)
@@ -1990,7 +4432,11 @@ def _derive_c_array_object(context: CampaignContext) -> dict[str, Any]:
                 name for name in indexed_names if f"<{name}>" in disassembly
             }
         if not indexed_names:
-            source_prefix = "\n".join(lines[:line_number])
+            if re.search(r"\)\s*\[", statement):
+                raise RuleNotApplicable(
+                    "indexed call result is not proven to be the referenced array object"
+                )
+            source_prefix = _strip_c_comments("\n".join(lines[:line_number]))
             referenced_arrays = {
                 name
                 for name in re.findall(r"\b([A-Za-z_]\w*)\b", statement)
@@ -2003,38 +4449,130 @@ def _derive_c_array_object(context: CampaignContext) -> dict[str, Any]:
         if len(indexed_names) != 1:
             raise RuleNotApplicable("exact operation is not bound to one indexed source object")
         selected_name = next(iter(indexed_names))
-        function_prefix = _source_function_prefix(lines, str(frame["function"]), line_number)
-        source_prefix = "\n".join(lines[:line_number])
+        if re.search(
+            rf"(?:->|\.)\s*{re.escape(selected_name)}\s*\[",
+            statement,
+        ):
+            raise RuleNotApplicable(
+                "a member array requires a separate proof for its base object"
+            )
+        function_prefix = _strip_c_comments(
+            _source_function_prefix(lines, str(frame["function"]), line_number)
+        )
+        source_prefix = _strip_c_comments("\n".join(lines[:line_number]))
         declaration_pattern = re.compile(
-            r"(?m)^\s*(?P<static>static\s+)?(?:const\s+)?[^;()=\n]+?"
+            r"(?m)^\s*(?P<static>static\s+)?(?:const\s+)?"
+            r"(?P<prefix>[^;()=\n]+?)"
             r"(?P<name>[A-Za-z_]\w*)\s*\[\s*(?P<capacity>[^\]]*)\s*\]\s*"
+            r"(?:[A-Z_][A-Z0-9_]*(?:\s*\([^;\n]*\))?\s*)*"
             r"(?P<tail>=|;|\{)",
         )
-        declarations = []
+        declarations: list[tuple[re.Match[str], int]] = []
         for match in declaration_pattern.finditer(source_prefix):
             name = match.group("name")
-            if name != selected_name:
+            if name != selected_name or not _c_declaration_prefix_is_type(
+                match.group("prefix")
+            ):
                 continue
-            declarations.append(match)
+            declarations.append(
+                (match, source_prefix[: match.start()].count("\n") + 1)
+            )
+        function_declarations = list(
+            match
+            for match in declaration_pattern.finditer(function_prefix)
+            if match.group("name") == selected_name
+            and _c_declaration_prefix_is_type(match.group("prefix"))
+        )
+        function_header = function_prefix.split("{", 1)[0]
+        if re.search(
+            rf"\([^)]*\b{re.escape(selected_name)}\b[^)]*\)",
+            function_header,
+        ):
+            raise RuleNotApplicable(
+                "a pointer parameter shadows the same-named array declaration"
+            )
+        non_array_pattern = re.compile(
+            rf"(?m)^[ \t]*(?!#)(?P<declaration>[^;()=\[\]\n]+?"
+            rf"\b{re.escape(selected_name)}\b\s*(?:=|;|,))"
+        )
+        if non_array_pattern.search(function_prefix) is not None:
+            raise RuleNotApplicable(
+                "a non-array local declaration can shadow the referenced array"
+            )
         declaration_ref: dict[str, str] | None = None
-        if len(declarations) == 1:
-            declaration = declarations[0]
+        if len(function_declarations) == 1:
+            declaration = function_declarations[0]
             object_name = declaration.group("name")
-            function_header = function_prefix.split("{", 1)[0]
-            if re.search(rf"\([^)]*\b{re.escape(object_name)}\b[^)]*\)", function_header):
-                raise RuleNotApplicable("a pointer parameter shadows the same-named array declaration")
             capacity = declaration.group("capacity").strip() or "initializer_element_count"
             declaration_text = declaration.group(0).strip()
-            storage = (
-                "static_array"
-                if declaration.group("static")
-                else (
-                    "automatic_array"
-                    if declaration_text in function_prefix
-                    else "static_duration_array"
+            storage = "static_array" if declaration.group("static") else "automatic_array"
+            declaration_alternatives = [" ".join(declaration.group(0).split())]
+        elif len(function_declarations) > 1:
+            raise RuleNotApplicable("exact source function has ambiguous array declarations")
+        else:
+            global_declarations = [
+                (match, declaration_line)
+                for match, declaration_line in declarations
+                if _c_declaration_is_file_scope(lines, declaration_line)
+            ]
+            if global_declarations:
+                global_non_arrays = [
+                    match
+                    for match in non_array_pattern.finditer(source_prefix)
+                    if _enclosing_c_function(
+                        lines,
+                        source_prefix[: match.start()].count("\n") + 1,
+                    )
+                    is None
+                    and _c_declaration_is_file_scope(
+                        lines,
+                        source_prefix[: match.start()].count("\n") + 1,
+                    )
+                ]
+                if global_non_arrays:
+                    raise RuleNotApplicable(
+                        "a compile-time source alternative defines a non-array object"
+                    )
+                capacities = [
+                    match.group("capacity").strip() or "initializer_element_count"
+                    for match, _line in global_declarations
+                ]
+                if any(value in {"0", "0U", "0u"} for value in capacities):
+                    raise RuleNotApplicable(
+                        "a compile-time source alternative defines a zero-capacity array"
+                    )
+                object_name = selected_name
+                capacity = (
+                    capacities[0]
+                    if len(set(capacities)) == 1
+                    else "all_compile_time_alternatives_nonzero"
                 )
-            )
-        elif not declarations:
+                declaration_alternatives = [
+                    " ".join(match.group(0).split())
+                    for match, _line in global_declarations
+                ]
+                declaration_lines = [
+                    declaration_line
+                    for _match, declaration_line in global_declarations
+                ]
+                declaration_text = " | ".join(declaration_alternatives)
+                storage = "static_duration_array"
+            elif declarations:
+                raise RuleNotApplicable(
+                    "same-named array declarations exist only in other source functions"
+                )
+            else:
+                external = _unique_source_array_definition(source, selected_name)
+                object_name = selected_name
+                capacity = external["capacity"]
+                declaration_text = external["declaration"]
+                storage = "static_duration_array"
+                declaration_ref = {
+                    "path": external["path"],
+                    "sha256": external["sha256"],
+                    "kind": "source_review",
+                }
+        if not object_name:
             external = _unique_source_array_definition(source, selected_name)
             object_name = selected_name
             capacity = external["capacity"]
@@ -2045,8 +4583,6 @@ def _derive_c_array_object(context: CampaignContext) -> dict[str, Any]:
                 "sha256": external["sha256"],
                 "kind": "source_review",
             }
-        else:
-            raise RuleNotApplicable("exact source use has ambiguous array declarations")
     if capacity in {"0", "0U", "0u"}:
         raise RuleNotApplicable("source array has zero capacity")
 
@@ -2067,6 +4603,8 @@ def _derive_c_array_object(context: CampaignContext) -> dict[str, Any]:
             "line": line_number,
             "statement": statement,
             "declaration": declaration_text,
+            "declaration_alternatives": declaration_alternatives,
+            "declaration_lines": declaration_lines,
         },
         "non_null_proof": {
             "object": object_name,
@@ -2165,6 +4703,946 @@ def _derive_c_read_terminator(context: CampaignContext) -> dict[str, Any]:
             "capacity": True,
             "offset_relation": True,
             "bounds_proven": True,
+        },
+    }
+
+
+def _derive_c_typed_link_store(context: CampaignContext) -> dict[str, Any]:
+    if str(context.state.get("vulnerability_type") or "") not in SPATIAL_TYPES:
+        raise RuleNotApplicable("candidate is not spatial")
+    pointer_size = int(context.export_manifest.get("pointer_size_bytes") or 0)
+    if (
+        str(context.binding.get("pcode") or "") != "STORE"
+        or int(context.binding.get("width_bytes") or 0) != pointer_size
+        or pointer_size <= 0
+    ):
+        raise RuleNotApplicable("candidate is not a pointer-width STORE")
+    source = _exact_source_context(context)
+    frame = source["frame"]
+    lines = source["lines"]
+    line_number = int(frame["line"])
+    statement = lines[line_number - 1].strip()
+    store = re.fullmatch(
+        r"\*(?P<link>[A-Za-z_]\w*)\s*=\s*"
+        r"(?P<node>[A-Za-z_]\w*)->(?P<next>[A-Za-z_]\w*)\s*;",
+        statement,
+    )
+    if store is None:
+        raise RuleNotApplicable("exact source line is not a pointer-to-pointer link STORE")
+    link = store.group("link")
+    node = store.group("node")
+    next_field = store.group("next")
+    prefix = _source_function_prefix(lines, str(frame["function"]), line_number)
+    function_text = _source_function_text(lines, str(frame["function"]), line_number)
+    base = re.search(
+        rf"(?P<type>[A-Za-z_]\w*)\s*\*\*\s*{re.escape(link)}\s*=\s*"
+        rf"&(?P<owner>[A-Za-z_]\w*)->(?P<head>[A-Za-z_]\w*)\s*;",
+        prefix,
+    )
+    if base is None:
+        raise RuleNotApplicable("link cursor has no typed member-address initializer")
+    element_type = base.group("type")
+    required = (
+        rf"\b{re.escape(element_type)}\s*\*\s*{re.escape(node)}\s*;",
+        rf"while\s*\(\s*\(\s*{re.escape(node)}\s*=\s*\*{re.escape(link)}\s*\)\s*"
+        rf"!=\s*NULL\s*\)",
+        rf"\b{re.escape(link)}\s*=\s*&{re.escape(node)}->{re.escape(next_field)}\s*;",
+    )
+    if not all(re.search(pattern, prefix) for pattern in required):
+        raise RuleNotApplicable("typed cursor loop and link-field induction are incomplete")
+    source_text = "\n".join(lines)
+    type_body = re.search(
+        rf"typedef\s+struct\s+{re.escape(element_type)}\s*\{{(?P<body>.*?)\}}\s*"
+        rf"{re.escape(element_type)}\s*;",
+        source_text,
+        re.DOTALL,
+    )
+    if type_body is None or re.search(
+        rf"struct\s+{re.escape(element_type)}\s*\*\s*{re.escape(next_field)}\s*;",
+        type_body.group("body"),
+    ) is None:
+        raise RuleNotApplicable("next field is not a same-type pointer member")
+    head_field = base.group("head")
+    typed_head_declarations = re.findall(
+        rf"(?:struct\s+)?{re.escape(element_type)}\s*\*\s*{re.escape(head_field)}\s*;",
+        source_text,
+    )
+    if len(typed_head_declarations) != 1:
+        raise RuleNotApplicable("head field does not have one same-type pointer declaration")
+    step_assignments = re.findall(
+        rf"(?<!\*)\b{re.escape(link)}\s*=\s*(?P<rhs>[^;]+);",
+        function_text,
+    )
+    if [" ".join(item.split()) for item in step_assignments] != [
+        f"&{node}->{next_field}"
+    ]:
+        raise RuleNotApplicable("link cursor has an unproved reassignment")
+    source_binding = _source_binding(
+        context,
+        source,
+        source_function=str(frame["function"]),
+        source_lines=[line_number],
+    )
+    return {
+        "rule_claim": "the pointer-to-pointer cursor always designates a pointer-width link member",
+        "operation_address": str(context.binding.get("address") or ""),
+        "source_binding": source_binding,
+        "source_excerpt": {
+            "path": source_binding["source_path"],
+            "sha256": source_binding["source_sha256"],
+            "function": str(frame["function"]),
+            "line": line_number,
+            "statement": statement,
+            "base_cursor": " ".join(base.group(0).split()),
+            "inductive_cursor": f"{link} = &{node}->{next_field};",
+        },
+        "object_layout": {
+            "object_identity": (
+                f"typed_member:{base.group('owner')}->{head_field} or "
+                f"{node}->{next_field}"
+            ),
+            "capacity_expression": f"sizeof({element_type} *)",
+            "write_offset_bytes": 0,
+            "write_width_bytes": pointer_size,
+            "proven_relation": "STORE width equals either destination link member width",
+        },
+        "claims": {
+            "exact_operation": True,
+            "source_or_binary_binding": True,
+            "exact_store": True,
+            "object_identity": True,
+            "capacity": True,
+            "offset_relation": True,
+            "bounds_proven": True,
+        },
+    }
+
+
+def _derive_c_bounded_wrapper_read(context: CampaignContext) -> dict[str, Any]:
+    if str(context.state.get("vulnerability_type") or "") not in SPATIAL_TYPES:
+        raise RuleNotApplicable("candidate is not spatial")
+    if str(context.binding.get("pcode") or "") != "STORE" or int(
+        context.binding.get("width_bytes") or 0
+    ) != 1:
+        raise RuleNotApplicable("candidate is not a one-byte STORE")
+    source = _exact_source_context(context)
+    frame = source["frame"]
+    lines = source["lines"]
+    line_number = int(frame["line"])
+    statement = lines[line_number - 1].strip()
+    store = re.fullmatch(
+        r"(?P<buffer>[A-Za-z_]\w*)\[(?P<count>[A-Za-z_]\w*)\]\s*=\s*"
+        r"(?:0|'\\0')\s*;",
+        statement,
+    )
+    if store is None:
+        raise RuleNotApplicable("exact source line is not a wrapper-read terminator STORE")
+    buffer_name = store.group("buffer")
+    count_name = store.group("count")
+    prefix = _source_function_prefix(lines, str(frame["function"]), line_number)
+    call = re.search(
+        rf"(?:int|ssize_t)\s+{re.escape(count_name)}\s*=\s*"
+        rf"open_read_close\s*\([^,]+,\s*{re.escape(buffer_name)}\s*,\s*"
+        rf"(?P<capacity>[A-Za-z_]\w*)\s*-\s*1\s*\)\s*;",
+        prefix,
+    )
+    positive_branch = re.search(
+        rf"if\s*\(\s*{re.escape(count_name)}\s*<\s*0\s*\)\s*\{{.*?\}}\s*"
+        rf"else\s*\{{(?:(?!\}}).)*?{re.escape(buffer_name)}\s*\[\s*"
+        rf"{re.escape(count_name)}\s*\]\s*=",
+        prefix,
+        re.DOTALL,
+    )
+    if call is None or positive_branch is None:
+        raise RuleNotApplicable("wrapper request and nonnegative-result branch are incomplete")
+    capacity_name = call.group("capacity")
+    source_text = "\n".join(lines)
+    alias = re.search(
+        rf"^\s*#\s*define\s+{re.escape(buffer_name)}\s+(?P<object>[A-Za-z_]\w*)\s*$",
+        source_text,
+        re.MULTILINE,
+    )
+    if alias is None:
+        raise RuleNotApplicable("read buffer is not a direct named-object macro alias")
+    object_name = alias.group("object")
+    read_path, read_text, read_ref = _pinned_source_file(
+        context, source, "libbb/read.c", "bounded read wrapper source"
+    )
+    wrapper_patterns = (
+        r"ssize_t\s+FAST_FUNC\s+safe_read\s*\([^)]*size_t\s+count\s*\).*?"
+        r"n\s*=\s*read\s*\(\s*fd\s*,\s*buf\s*,\s*count\s*\)\s*;",
+        r"ssize_t\s+FAST_FUNC\s+full_read\s*\([^)]*size_t\s+len\s*\).*?"
+        r"while\s*\(\s*len\s*\).*?cc\s*=\s*safe_read\s*\(\s*fd\s*,\s*buf\s*,\s*len\s*\)\s*;"
+        r".*?total\s*\+=\s*cc\s*;\s*len\s*-=\s*cc\s*;.*?return\s+total\s*;",
+        r"ssize_t\s+FAST_FUNC\s+read_close\s*\([^)]*size_t\s+size\s*\).*?"
+        r"size\s*=\s*full_read\s*\(\s*fd\s*,\s*buf\s*,\s*size\s*\)\s*;.*?return\s+size\s*;",
+        r"ssize_t\s+FAST_FUNC\s+open_read_close\s*\([^)]*size_t\s+size\s*\).*?"
+        r"return\s+read_close\s*\(\s*fd\s*,\s*buf\s*,\s*size\s*\)\s*;",
+    )
+    if not all(re.search(pattern, read_text, re.DOTALL) for pattern in wrapper_patterns):
+        raise RuleNotApplicable(f"bounded wrapper implementation changed in {read_path.name}")
+    _common_path, common_text, common_ref = _pinned_source_file(
+        context, source, "libbb/common_bufsiz.c", "common buffer definition"
+    )
+    if re.search(
+        rf"char\s+{re.escape(object_name)}\s*\[\s*{re.escape(capacity_name)}\s*\]",
+        common_text,
+    ) is None:
+        raise RuleNotApplicable("common buffer definition and request capacity differ")
+    symbol = _reference_defined_data_symbol(context, source, object_name)
+    if int(symbol["size_bytes"]) <= 1:
+        raise RuleNotApplicable("reference common buffer has no terminator capacity")
+    dependency = _sdk_api_contract(context, _mapping(source.get("mapping")), api="read")
+    source_binding = _source_binding(
+        context,
+        source,
+        source_function=str(frame["function"]),
+        source_lines=[line_number],
+    )
+    return {
+        "rule_claim": "the wrapper returns at most its capacity-minus-one request before the terminator STORE",
+        "operation_address": str(context.binding.get("address") or ""),
+        "source_binding": source_binding,
+        "source_excerpt": {
+            "path": source_binding["source_path"],
+            "sha256": source_binding["source_sha256"],
+            "function": str(frame["function"]),
+            "line": line_number,
+            "statement": statement,
+            "read_call": " ".join(call.group(0).split()),
+            "success_path": f"{count_name} >= 0 in the else branch",
+        },
+        "dependency_contract": dependency,
+        "additional_source_refs": [
+            read_ref,
+            common_ref,
+            dependency["sdk_archive"],
+            dependency["api_header"],
+        ],
+        "reference_object": symbol,
+        "object_layout": {
+            "object_identity": f"static_array:{object_name}",
+            "capacity_expression": capacity_name,
+            "capacity_bytes_in_reference": int(symbol["size_bytes"]),
+            "write_offset_expression": count_name,
+            "write_width_bytes": 1,
+            "proven_relation": f"0 <= {count_name} <= {capacity_name} - 1",
+        },
+        "claims": {
+            "exact_operation": True,
+            "source_or_binary_binding": True,
+            "exact_store": True,
+            "object_identity": True,
+            "capacity": True,
+            "offset_relation": True,
+            "bounds_proven": True,
+        },
+    }
+
+
+def _derive_c_masked_ring_index(context: CampaignContext) -> dict[str, Any]:
+    if str(context.state.get("vulnerability_type") or "") not in SPATIAL_TYPES:
+        raise RuleNotApplicable("candidate is not spatial")
+    pointer_size = int(context.export_manifest.get("pointer_size_bytes") or 0)
+    if (
+        str(context.binding.get("pcode") or "") != "STORE"
+        or int(context.binding.get("width_bytes") or 0) != pointer_size
+        or pointer_size <= 0
+    ):
+        raise RuleNotApplicable("candidate is not a pointer-width STORE")
+    source = _exact_source_context(context)
+    frame = source["frame"]
+    lines = source["lines"]
+    line_number = int(frame["line"])
+    statement = lines[line_number - 1].strip()
+    store = re.fullmatch(
+        r"(?P<array>[A-Za-z_]\w*)\[(?P<index>[A-Za-z_]\w*)\]\s*=\s*.+;",
+        statement,
+    )
+    if store is None:
+        raise RuleNotApplicable("exact source line is not an indexed pointer STORE")
+    array_name = store.group("array")
+    index_name = store.group("index")
+    prefix = _source_function_prefix(lines, str(frame["function"]), line_number)
+    function_tail = "\n".join(lines[line_number - 1 :])
+    declaration = re.search(
+        rf"static\s+[^;\n]*\*\s*{re.escape(array_name)}\s*\[\s*(?P<count>\d+)\s*\]\s*;",
+        prefix,
+    )
+    index_declaration = re.search(
+        rf"static\s+(?P<type>(?:u?int\d+_t|unsigned(?:\s+\w+)*|size_t))\s+"
+        rf"{re.escape(index_name)}\s*;(?:\s*/\*\s*=\s*0\s*\*/)?",
+        prefix,
+    )
+    update = re.search(
+        rf"{re.escape(index_name)}\s*=\s*\(\s*{re.escape(index_name)}\s*\+\s*1\s*\)\s*"
+        rf"&\s*\(\s*ARRAY_SIZE\s*\(\s*{re.escape(array_name)}\s*\)\s*-\s*1\s*\)\s*;",
+        function_tail,
+    )
+    if declaration is None or index_declaration is None or update is None:
+        raise RuleNotApplicable("static array, zero index, and masked update are incomplete")
+    capacity = int(declaration.group("count"))
+    if capacity <= 0 or capacity & (capacity - 1):
+        raise RuleNotApplicable("masked ring capacity is not a positive power of two")
+    source_text = "\n".join(lines)
+    assignments = re.findall(rf"\b{re.escape(index_name)}\s*=\s*([^;]+);", source_text)
+    if len(assignments) != 1 or "ARRAY_SIZE" not in assignments[0]:
+        raise RuleNotApplicable("ring index has another source-level assignment")
+    _header_path, header_text, header_ref = _pinned_source_file(
+        context, source, "include/libbb.h", "ARRAY_SIZE definition"
+    )
+    if re.search(
+        r"^\s*#\s*define\s+ARRAY_SIZE\s*\(\s*x\s*\)\s*"
+        r"\(\(unsigned\)\(sizeof\(x\)\s*/\s*sizeof\(\(x\)\[0\]\)\)\)",
+        header_text,
+        re.MULTILINE,
+    ) is None:
+        raise RuleNotApplicable("ARRAY_SIZE definition changed")
+    source_binding = _source_binding(
+        context,
+        source,
+        source_function=str(frame["function"]),
+        source_lines=[line_number],
+    )
+    return {
+        "rule_claim": "the static-zero ring index is masked into the power-of-two array range after every use",
+        "operation_address": str(context.binding.get("address") or ""),
+        "source_binding": source_binding,
+        "source_excerpt": {
+            "path": source_binding["source_path"],
+            "sha256": source_binding["source_sha256"],
+            "function": str(frame["function"]),
+            "line": line_number,
+            "statement": statement,
+            "array_declaration": " ".join(declaration.group(0).split()),
+            "index_declaration": " ".join(index_declaration.group(0).split()),
+            "index_update": " ".join(update.group(0).split()),
+        },
+        "additional_source_refs": [header_ref],
+        "object_layout": {
+            "object_identity": f"static_array:{array_name}",
+            "capacity_elements": capacity,
+            "write_index_expression": index_name,
+            "write_width_bytes": pointer_size,
+            "proven_relation": f"0 <= {index_name} <= {capacity - 1}",
+        },
+        "claims": {
+            "exact_operation": True,
+            "source_or_binary_binding": True,
+            "exact_store": True,
+            "object_identity": True,
+            "capacity": True,
+            "offset_relation": True,
+            "bounds_proven": True,
+        },
+    }
+
+
+def _derive_c_trailing_escape_terminator(context: CampaignContext) -> dict[str, Any]:
+    if str(context.state.get("vulnerability_type") or "") not in SPATIAL_TYPES:
+        raise RuleNotApplicable("candidate is not spatial")
+    if str(context.binding.get("pcode") or "") != "STORE" or int(
+        context.binding.get("width_bytes") or 0
+    ) != 1:
+        raise RuleNotApplicable("candidate is not a one-byte STORE")
+    source = _exact_source_context(context)
+    frame = source["frame"]
+    lines = source["lines"]
+    line_number = int(frame["line"])
+    statement = lines[line_number - 1].strip()
+    store = re.fullmatch(
+        r"(?P<buffer>(?:[A-Za-z_]\w*\.)?[A-Za-z_]\w*)\s*"
+        r"\[\s*(?P<len>[A-Za-z_]\w*)\s*-\s*1\s*\]\s*=\s*(?:0|'\\0')\s*;",
+        statement,
+    )
+    if store is None:
+        raise RuleNotApplicable("exact source line is not a length-minus-one terminator STORE")
+    if str(frame.get("function") or "") != "add_cmd":
+        raise RuleNotApplicable("trailing-escape proof is not in add_cmd")
+    buffer_name = store.group("buffer")
+    len_name = store.group("len")
+    prefix = _source_function_prefix(lines, "add_cmd", line_number)
+    required = (
+        rf"(?P<n>[A-Za-z_]\w*)\s*=\s*{re.escape(len_name)}\s*=\s*strlen\s*\(\s*cmdstr\s*\)\s*;",
+        rf"while\s*\(\s*(?P<n>[A-Za-z_]\w*)\s*&&\s*cmdstr\s*\[\s*(?P=n)\s*-\s*1\s*\]\s*==\s*'\\\\'\s*\)\s*(?P=n)--\s*;",
+        rf"if\s*\(\s*\(\s*{re.escape(len_name)}\s*-\s*(?P<n>[A-Za-z_]\w*)\s*\)\s*&\s*1\s*\)\s*\{{",
+        rf"if\s*\(\s*!{re.escape(buffer_name)}\s*\)\s*"
+        rf"{re.escape(buffer_name)}\s*=\s*xstrdup\s*\(\s*cmdstr\s*\)\s*;",
+        r"cmdstr\s*=\s*G\.add_cmd_line\s*=\s*tp\s*;",
+        r"tp\s*=\s*xasprintf\s*\(\s*\"%s\\n%s\"\s*,\s*G\.add_cmd_line\s*,\s*cmdstr\s*\)\s*;",
+    )
+    matches = [re.search(pattern, prefix) for pattern in required]
+    if any(match is None for match in matches):
+        raise RuleNotApplicable("length parity and both allocation paths are incomplete")
+    n_name = matches[0].group("n")  # type: ignore[union-attr]
+    if matches[1].group("n") != n_name or matches[2].group("n") != n_name:  # type: ignore[union-attr]
+        raise RuleNotApplicable("trailing-run counter is inconsistent")
+    _allocator_path, allocator_text, allocator_ref = _pinned_source_file(
+        context, source, "libbb/xfuncs_printf.c", "string allocation wrappers"
+    )
+    allocator_patterns = (
+        r"char\*\s+FAST_FUNC\s+xstrdup\s*\([^)]*\).*?t\s*=\s*strdup\s*\(\s*s\s*\)\s*;"
+        r".*?if\s*\(\s*t\s*==\s*NULL\s*\).*?return\s+t\s*;",
+        r"char\*\s+FAST_FUNC\s+xasprintf\s*\([^)]*\).*?"
+        r"r\s*=\s*vasprintf\s*\(\s*&string_ptr\s*,\s*format\s*,\s*p\s*\)\s*;"
+        r".*?if\s*\(\s*r\s*<\s*0\s*\).*?return\s+string_ptr\s*;",
+    )
+    if not all(re.search(pattern, allocator_text, re.DOTALL) for pattern in allocator_patterns):
+        raise RuleNotApplicable("string allocation wrapper contracts changed")
+    source_binding = _source_binding(
+        context,
+        source,
+        source_function="add_cmd",
+        source_lines=[line_number],
+    )
+    return {
+        "rule_claim": "odd trailing-escape parity implies positive length and both paths allocate the complete command string",
+        "operation_address": str(context.binding.get("address") or ""),
+        "source_binding": source_binding,
+        "source_excerpt": {
+            "path": source_binding["source_path"],
+            "sha256": source_binding["source_sha256"],
+            "function": "add_cmd",
+            "line": line_number,
+            "statement": statement,
+            "length_initialization": " ".join(matches[0].group(0).split()),  # type: ignore[union-attr]
+            "trailing_scan": " ".join(matches[1].group(0).split()),  # type: ignore[union-attr]
+            "parity_guard": " ".join(matches[2].group(0).split()),  # type: ignore[union-attr]
+        },
+        "additional_source_refs": [allocator_ref],
+        "object_layout": {
+            "object_identity": f"allocated_string:{buffer_name}",
+            "capacity_expression": f"{len_name} + 1",
+            "write_offset_expression": f"{len_name} - 1",
+            "write_width_bytes": 1,
+            "proven_relation": (
+                f"({len_name} - {n_name}) is odd, so 1 <= {len_name}; "
+                f"therefore 0 <= {len_name} - 1 < {len_name} + 1"
+            ),
+        },
+        "claims": {
+            "exact_operation": True,
+            "source_or_binary_binding": True,
+            "exact_store": True,
+            "object_identity": True,
+            "capacity": True,
+            "offset_relation": True,
+            "bounds_proven": True,
+        },
+    }
+
+
+def _derive_c_macro_typed_member(context: CampaignContext) -> dict[str, Any]:
+    if str(context.state.get("vulnerability_type") or "") not in SPATIAL_TYPES:
+        raise RuleNotApplicable("candidate is not spatial")
+    if str(context.binding.get("pcode") or "") != "STORE":
+        raise RuleNotApplicable("exact operation is not a STORE")
+    source = _exact_source_context(context)
+    frame = source["frame"]
+    lines = source["lines"]
+    line_number = int(frame["line"])
+    statement = lines[line_number - 1].strip()
+    array_store = re.fullmatch(
+        r"(?P<name>[A-Za-z_]\w*)\s*\[\s*(?P<index>0x[0-9a-fA-F]+|\d+)\s*\]\s*=\s*.+;",
+        statement,
+    )
+    scalar_store = re.fullmatch(
+        r"(?P<name>[A-Za-z_]\w*)\s*=\s*.+;",
+        statement,
+    )
+    store = array_store or scalar_store
+    if store is None:
+        raise RuleNotApplicable("exact source line is not a macro-backed member STORE")
+    name = store.group("name")
+    source_text = "\n".join(lines)
+    macro_matches = re.findall(
+        rf"^\s*#\s*define\s+{re.escape(name)}\s+\(\s*"
+        rf"(?P<base>[A-Za-z_]\w*)\s*\.\s*(?P<field>[A-Za-z_]\w*)\s*\)\s*$",
+        source_text,
+        re.MULTILINE,
+    )
+    if len(macro_matches) != 1 or macro_matches[0][1] != name:
+        raise RuleNotApplicable("STORE name does not expand to one same-named struct member")
+    base_name, field_name = macro_matches[0]
+    declaration_text = re.sub(r"/\*.*?\*/", " ", source_text, flags=re.DOTALL)
+    width = int(context.binding.get("width_bytes") or 0)
+    pointer_size = int(context.export_manifest.get("pointer_size_bytes") or 0)
+    additional_refs: list[dict[str, str]] = []
+    if array_store is not None:
+        declarations = list(
+            re.finditer(
+                rf"(?P<type>(?:const\s+|volatile\s+|signed\s+|unsigned\s+)*"
+                rf"[A-Za-z_]\w*)\s*(?P<pointer>\*+)\s*{re.escape(field_name)}\s*"
+                rf"\[\s*(?P<count>0x[0-9a-fA-F]+|\d+)\s*\]\s*;",
+                declaration_text,
+            )
+        )
+        if len(declarations) != 1:
+            raise RuleNotApplicable("macro array member has no unique pointer-array declaration")
+        declaration = declarations[0]
+        capacity = int(declaration.group("count"), 0)
+        index = int(array_store.group("index"), 0)
+        if width != pointer_size or pointer_size <= 0:
+            raise RuleNotApplicable("array member STORE is not pointer-width")
+        if not 0 <= index < capacity:
+            raise RuleNotApplicable("constant member index is outside its declared array")
+        object_layout = {
+            "object_identity": f"typed_member:{base_name}.{field_name}",
+            "capacity_expression": f"{capacity} * sizeof({declaration.group('type')} *)",
+            "capacity_elements": capacity,
+            "write_index": index,
+            "write_width_bytes": width,
+            "proven_relation": f"0 <= {index} < {capacity}",
+        }
+        member_declaration = " ".join(declaration.group(0).split())
+    else:
+        declarations = list(
+            re.finditer(
+                rf"(?P<qualifiers>(?:(?:const|volatile)\s+)*)"
+                rf"(?P<type>smallint|u?int(?:8|16|32|64)_t|signed\s+char|unsigned\s+char|char)\s+"
+                rf"{re.escape(field_name)}\s*;",
+                declaration_text,
+            )
+        )
+        if len(declarations) != 1:
+            raise RuleNotApplicable("macro scalar member has no unique fixed-width declaration")
+        declaration = declarations[0]
+        type_name = " ".join(declaration.group("type").split())
+        fixed_widths = {
+            "char": 1,
+            "signed char": 1,
+            "unsigned char": 1,
+            "int8_t": 1,
+            "uint8_t": 1,
+            "int16_t": 2,
+            "uint16_t": 2,
+            "int32_t": 4,
+            "uint32_t": 4,
+            "int64_t": 8,
+            "uint64_t": 8,
+        }
+        expected_width = fixed_widths.get(type_name)
+        if type_name == "smallint":
+            if (
+                str(context.export_manifest.get("processor") or "") != "x86"
+                or pointer_size != 8
+            ):
+                raise RuleNotApplicable("smallint width is not proven for this architecture")
+            _platform_path, platform_text, platform_ref = _pinned_source_file(
+                context, source, "include/platform.h", "smallint definition"
+            )
+            if re.search(
+                r"#if\s+defined\(i386\).*?defined\(__x86_64__\).*?"
+                r"typedef\s+signed\s+char\s+smallint\s*;",
+                platform_text,
+                re.DOTALL,
+            ) is None:
+                raise RuleNotApplicable("x86_64 smallint definition changed")
+            additional_refs.append(platform_ref)
+            expected_width = 1
+        if expected_width is None or width != expected_width:
+            raise RuleNotApplicable("scalar member STORE width differs from its declared type")
+        object_layout = {
+            "object_identity": f"typed_member:{base_name}.{field_name}",
+            "capacity_expression": f"sizeof({base_name}.{field_name})",
+            "write_offset_bytes": 0,
+            "write_width_bytes": width,
+            "proven_relation": "STORE width equals the fixed-width scalar member capacity",
+        }
+        member_declaration = " ".join(declaration.group(0).split())
+    source_binding = _source_binding(
+        context,
+        source,
+        source_function=str(frame["function"]),
+        source_lines=[line_number],
+    )
+    proof = {
+        "rule_claim": "the source macro binds the exact STORE to a declared fixed-capacity struct member",
+        "operation_address": str(context.binding.get("address") or ""),
+        "source_binding": source_binding,
+        "source_excerpt": {
+            "path": source_binding["source_path"],
+            "sha256": source_binding["source_sha256"],
+            "function": str(frame["function"]),
+            "line": line_number,
+            "statement": statement,
+            "macro_expansion": f"{name} -> ({base_name}.{field_name})",
+            "member_declaration": member_declaration,
+        },
+        "object_layout": object_layout,
+        "claims": {
+            "exact_operation": True,
+            "source_or_binary_binding": True,
+            "exact_store": True,
+            "object_identity": True,
+            "capacity": True,
+            "offset_relation": True,
+            "bounds_proven": True,
+        },
+    }
+    if additional_refs:
+        proof["additional_source_refs"] = additional_refs
+    return proof
+
+
+def _derive_c_bounded_typed_byte_store(context: CampaignContext) -> dict[str, Any]:
+    if str(context.state.get("vulnerability_type") or "") not in SPATIAL_TYPES:
+        raise RuleNotApplicable("candidate is not spatial")
+    if (
+        str(context.binding.get("pcode") or "") != "STORE"
+        or int(context.binding.get("width_bytes") or 0) != 1
+    ):
+        raise RuleNotApplicable("exact operation is not a one-byte STORE")
+    source = _exact_source_context(context)
+    frame = source["frame"]
+    lines = source["lines"]
+    line_number = int(frame["line"])
+    statement = lines[line_number - 1].strip()
+    store = re.fullmatch(
+        r"\(\(\s*(?P<byte_type>u?int8_t|unsigned\s+char|signed\s+char|char)"
+        r"\s*\*\s*\)\s*(?P<object>[A-Za-z_]\w*)\s*->\s*"
+        r"(?P<field>[A-Za-z_]\w*)\s*\)\s*\[\s*"
+        r"(?P<index>[A-Za-z_]\w*)\s*\]\s*=\s*.+;",
+        statement,
+    )
+    if store is None:
+        raise RuleNotApplicable("exact source line is not a typed byte view member STORE")
+    object_name = store.group("object")
+    field_name = store.group("field")
+    index_name = store.group("index")
+    function_text = _source_function_text(
+        lines,
+        str(frame["function"]),
+        line_number,
+    )
+    parameter = re.search(
+        rf"\b(?P<type>[A-Za-z_]\w*)\s*\*\s*{re.escape(object_name)}\b",
+        function_text,
+    )
+    if parameter is None:
+        raise RuleNotApplicable("STORE base is not a typed pointer parameter")
+    record_type = parameter.group("type")
+    initialization_rows = [
+        number
+        for number, line in enumerate(lines, start=1)
+        if re.search(
+            rf"\bunsigned\s+{re.escape(index_name)}\s*=\s*0\s*;",
+            line,
+        )
+    ]
+    if len(initialization_rows) != 1 or initialization_rows[0] >= line_number:
+        raise RuleNotApplicable("byte index has no unique zero initialization before STORE")
+    guard = re.search(
+        rf"if\s*\(\s*[^)]*?&&\s*\+\+\s*{re.escape(index_name)}\s*"
+        rf"<=\s*(?P<bound>0x[0-9a-fA-F]+|\d+)\s*\)\s*\{{"
+        rf"(?P<body>[^{{}}]*)\}}",
+        function_text,
+        re.DOTALL,
+    )
+    statement_offset = function_text.find(statement)
+    if (
+        guard is None
+        or statement_offset < 0
+        or guard.start() <= statement_offset
+        or re.search(r"\bcontinue\s*;", guard.group("body")) is None
+        or re.match(r"\s*return\s+-1\s*;\s*\}", function_text[guard.end() :])
+        is None
+    ):
+        raise RuleNotApplicable("failed index guard can reach another loop iteration")
+    assignment_count = len(
+        re.findall(
+            rf"(?<![=!<>])\b{re.escape(index_name)}\s*=(?!=)",
+            function_text,
+        )
+    )
+    increment_count = len(
+        re.findall(rf"\+\+\s*\b{re.escape(index_name)}\b", function_text)
+    )
+    forbidden_mutations = re.search(
+        rf"(?:\b{re.escape(index_name)}\s*\+\+|--\s*\b{re.escape(index_name)}\b|"
+        rf"\b{re.escape(index_name)}\s*--|\b{re.escape(index_name)}\s*[+\-*/%&|^]=)",
+        function_text,
+    )
+    if assignment_count != 1 or increment_count != 1 or forbidden_mutations is not None:
+        raise RuleNotApplicable("byte index has additional mutations")
+    source_path = Path(source["source_path"])
+    source_text = "\n".join(lines)
+    declaration_inputs: list[tuple[Path, str]] = [(source_path, source_text)]
+    for include_name in re.findall(
+        r'^\s*#\s*include\s+"(?P<name>[^"/]+)"\s*$',
+        source_text,
+        re.MULTILINE,
+    ):
+        included = source_path.parent / include_name
+        if included.is_file():
+            declaration_inputs.append((included, _read_source_text(included)))
+    type_matches: list[tuple[Path, re.Match[str], re.Match[str]]] = []
+    type_pattern = re.compile(
+        rf"typedef\s+struct(?:\s+[A-Za-z_]\w*)?\s*\{{(?P<body>.*?)\}}\s*"
+        rf"{re.escape(record_type)}\s*;",
+        re.DOTALL,
+    )
+    field_pattern = re.compile(
+        rf"(?P<type>u?int(?:8|16|32|64)_t|unsigned\s+char|signed\s+char|char)"
+        rf"\s+{re.escape(field_name)}\s*\[\s*(?P<count>0x[0-9a-fA-F]+|\d+)\s*\]\s*;"
+    )
+    for path, text in declaration_inputs:
+        uncommented = re.sub(r"/\*.*?\*/", " ", text, flags=re.DOTALL)
+        for type_match in type_pattern.finditer(uncommented):
+            field_match = field_pattern.search(type_match.group("body"))
+            if field_match is not None:
+                type_matches.append((path, type_match, field_match))
+    if len(type_matches) != 1:
+        raise RuleNotApplicable("typed pointer has no unique included fixed-array member")
+    declaration_path, _type_match, field_match = type_matches[0]
+    element_type = " ".join(field_match.group("type").split())
+    element_widths = {
+        "char": 1,
+        "signed char": 1,
+        "unsigned char": 1,
+        "int8_t": 1,
+        "uint8_t": 1,
+        "int16_t": 2,
+        "uint16_t": 2,
+        "int32_t": 4,
+        "uint32_t": 4,
+        "int64_t": 8,
+        "uint64_t": 8,
+    }
+    element_width = element_widths[element_type]
+    element_count = int(field_match.group("count"), 0)
+    capacity_bytes = element_width * element_count
+    upper_bound = int(guard.group("bound"), 0)
+    if upper_bound + 1 > capacity_bytes:
+        raise RuleNotApplicable("guarded byte index can exceed the member capacity")
+    guard_lines = [
+        number
+        for number, line in enumerate(lines, start=1)
+        if re.search(
+            rf"\+\+\s*{re.escape(index_name)}\s*<=\s*{re.escape(guard.group('bound'))}",
+            line,
+        )
+    ]
+    if len(guard_lines) != 1:
+        raise RuleNotApplicable("index guard has no unique source line")
+    source_binding = _source_binding(
+        context,
+        source,
+        source_function=str(frame["function"]),
+        source_lines=sorted({initialization_rows[0], line_number, guard_lines[0]}),
+    )
+    declaration_ref = {
+        "path": _relative_if_contained(context.root, declaration_path),
+        "sha256": _sha256_file(declaration_path),
+        "kind": "source_review",
+    }
+    return {
+        "rule_claim": "the only byte-index induction is zero initialization followed by a terminating inclusive upper-bound guard",
+        "operation_address": str(context.binding.get("address") or ""),
+        "source_binding": source_binding,
+        "source_excerpt": {
+            "path": source_binding["source_path"],
+            "sha256": source_binding["source_sha256"],
+            "function": str(frame["function"]),
+            "line": line_number,
+            "statement": statement,
+            "index_initialization_line": initialization_rows[0],
+            "index_guard_line": guard_lines[0],
+            "member_declaration": " ".join(field_match.group(0).split()),
+        },
+        "additional_source_refs": [declaration_ref],
+        "object_layout": {
+            "object_identity": f"typed_member:{object_name}->{field_name}",
+            "capacity_expression": f"{element_count} * sizeof({element_type})",
+            "capacity_bytes": capacity_bytes,
+            "write_offset_expression": index_name,
+            "write_width_bytes": 1,
+            "proven_relation": f"0 <= {index_name} <= {upper_bound} < {capacity_bytes}",
+        },
+        "claims": {
+            "exact_operation": True,
+            "source_or_binary_binding": True,
+            "exact_store": True,
+            "object_identity": True,
+            "capacity": True,
+            "offset_relation": True,
+            "bounds_proven": True,
+        },
+    }
+
+
+def _derive_c_struct_output_initialization(context: CampaignContext) -> dict[str, Any]:
+    """Prove a split stack local is covered by a dominating typed output init.
+
+    Optimized binaries commonly split one source struct into many decompiler
+    locals.  A call that initializes the source object then appears as a set of
+    INDIRECT effects, while later field uses are reported as independent
+    uninitialized values.  This rule joins the exact later CALL input back to
+    the stack aggregate passed to a verified source callee, checks dominance,
+    and uses the reference build's DWARF layout for the byte-range relation.
+    """
+
+    if str(context.state.get("vulnerability_type") or "") != "uninitialized_memory_use":
+        raise RuleNotApplicable("candidate is not an uninitialized-use candidate")
+    if str(context.binding.get("pcode") or "") not in {"CALL", "CALLIND"}:
+        raise RuleNotApplicable("exact candidate operation is not a CALL")
+    selected = _mapping(context.binding.get("pcode_record"))
+    if str(selected.get("pcode") or "") != str(context.binding.get("pcode") or ""):
+        raise CertificateError("prepared CALL record disagrees with its p-code identity")
+    expression = str(_mapping(context.state.get("source")).get("expression") or "")
+    selected_inputs = (
+        _mapping_rows(selected.get("inputs"))
+        if selected.get("inputs") is not None
+        else _mapping_rows(selected.get("args"))
+    )
+    candidate_inputs = [
+        item
+        for item in selected_inputs
+        if _stack_var_name(item) == expression
+    ]
+    if len(candidate_inputs) != 1:
+        raise RuleNotApplicable("exact CALL does not consume the alleged stack local once")
+    candidate_input = candidate_inputs[0]
+    try:
+        candidate_offset = _integer_value(
+            candidate_input.get("stack_offset"), "candidate stack offset"
+        )
+    except CertificateError as exc:
+        raise RuleNotApplicable("exact CALL input is not a stack byte range") from exc
+    candidate_width = int(candidate_input.get("size_bytes") or 0)
+    if candidate_width <= 0:
+        raise RuleNotApplicable("exact CALL input has no positive byte width")
+
+    function = _bound_export_function(context)
+    candidate_address = _hex_int(context.binding.get("address"), "candidate CALL address")
+    initializers = _struct_output_initializers(context, function)
+    matches: list[dict[str, Any]] = []
+    for initializer in initializers:
+        base_offset = int(initializer["stack_base_offset"])
+        layout = _mapping(initializer.get("compiled_layout"))
+        capacity = int(layout.get("size_bytes") or 0)
+        relative_offset = candidate_offset - base_offset
+        if relative_offset < 0 or relative_offset + candidate_width > capacity:
+            continue
+        relation = _cfg_dominance_relation(
+            function,
+            str(initializer["call_address"]),
+            _hex(candidate_address),
+        )
+        if not relation["feasible"] or not relation["before_dominates_after"]:
+            continue
+        members = [
+            member
+            for member in _mapping_rows(layout.get("members"))
+            if int(member.get("offset_bytes") or 0) < relative_offset + candidate_width
+            and relative_offset
+            < int(member.get("offset_bytes") or 0) + int(member.get("size_bytes") or 0)
+        ]
+        use_lines = _struct_member_use_lines(
+            _mapping(initializer.get("caller_source")),
+            str(initializer["source_variable"]),
+            [str(member.get("name") or "") for member in members],
+            after_line=int(initializer["source_call_line"]),
+        )
+        if not members or not use_lines:
+            continue
+        matches.append(
+            {
+                **initializer,
+                "candidate_relative_offset": relative_offset,
+                "candidate_members": members,
+                "candidate_source_use_lines": use_lines,
+                "cfg_relation": relation,
+            }
+        )
+    if len(matches) != 1:
+        raise RuleNotApplicable("no unique dominating typed whole-struct initializer covers the CALL input")
+    match = matches[0]
+
+    mapping = _reference_mapping(context)
+    candidate_mapping = _reference_operation_mapping(context, mapping, candidate_address)
+    caller_source = _mapping(match.get("caller_source"))
+    caller_names = {
+        _normalized_c_function_name(item)
+        for item in _string_rows(candidate_mapping.get("reference_function_names"))
+    }
+    if str(caller_source.get("function") or "") not in caller_names:
+        raise RuleNotApplicable("candidate operation maps to another source function")
+    source_context = {
+        "mapping": mapping,
+        "operation_mapping": candidate_mapping,
+        "source_path": Path(str(caller_source["path"])),
+    }
+    source_lines = sorted(
+        {
+            int(match["source_declaration_line"]),
+            int(match["source_call_line"]),
+            *[int(item) for item in match["candidate_source_use_lines"]],
+        }
+    )
+    source_binding = _source_binding(
+        context,
+        source_context,
+        source_function=str(caller_source["function"]),
+        source_lines=source_lines,
+    )
+    callee_source = _mapping(match.get("callee_source"))
+    struct_source = _mapping(match.get("struct_source"))
+    additional_refs = _deduplicated_source_refs(
+        context,
+        [Path(str(callee_source["path"])), Path(str(struct_source["path"]))],
+    )
+    layout = _mapping(match.get("compiled_layout"))
+    return {
+        "rule_claim": "a dominating typed output call unconditionally zero-initializes every byte of the containing compiled struct",
+        "operation_address": _hex(candidate_address),
+        "source_binding": source_binding,
+        "initializer": {
+            "call_address": str(match["call_address"]),
+            "callee_address": str(match["callee_address"]),
+            "callee_function": str(callee_source["function"]),
+            "output_parameter_index": int(match["output_parameter_index"]),
+            "output_parameter": str(match["output_parameter"]),
+            "memset_line": int(match["memset_line"]),
+            "memset_statement": str(match["memset_statement"]),
+            "source_call_line": int(match["source_call_line"]),
+            "source_call_statement": str(match["source_call_statement"]),
+            "source_variable": str(match["source_variable"]),
+            "cfg_relation": _mapping(match.get("cfg_relation")),
+            "callee_source_binding": _mapping(match.get("callee_source_binding")),
+        },
+        "compiled_object": {
+            "type": f"struct {layout['name']}",
+            "reference_binary_path": str(layout["reference_binary_path"]),
+            "reference_binary_sha256": str(layout["reference_binary_sha256"]),
+            "capacity_bytes": int(layout["size_bytes"]),
+            "stack_base_offset": int(match["stack_base_offset"]),
+            "candidate_stack_offset": candidate_offset,
+            "candidate_relative_offset": int(match["candidate_relative_offset"]),
+            "candidate_width_bytes": candidate_width,
+            "overlapping_members": [
+                {
+                    "name": str(item.get("name") or ""),
+                    "offset_bytes": int(item.get("offset_bytes") or 0),
+                    "size_bytes": int(item.get("size_bytes") or 0),
+                }
+                for item in match["candidate_members"]
+            ],
+            "proven_relation": (
+                f"0 <= {int(match['candidate_relative_offset'])} and "
+                f"{int(match['candidate_relative_offset'])} + {candidate_width} "
+                f"<= {int(layout['size_bytes'])}"
+            ),
+        },
+        "additional_source_refs": additional_refs,
+        "claims": {
+            "exact_operation": True,
+            "source_or_binary_binding": True,
+            "all_path_initialization": True,
+            "cfg_dominance": True,
+            "object_identity": True,
+            "capacity": True,
+            "offset_relation": True,
         },
     }
 
@@ -4382,16 +7860,22 @@ def _unique_source_array_definition(
     source_root = Path(source["source_root"])
     pattern = re.compile(
         rf"(?m)^[ \t]*(?P<declaration>(?P<prefix>[^;()=\[\]\n]+?)"
-        rf"\b{re.escape(name)}\s*\[\s*(?P<capacity>[^\]]*)\s*\]\s*(?:=|;|\{{))"
+        rf"\b{re.escape(name)}\s*\[\s*(?P<capacity>[^\]]*)\s*\]\s*"
+        rf"(?:[A-Z_][A-Z0-9_]*(?:\s*\([^;\n]*\))?\s*)*(?:=|;|\{{))"
     )
     matches: list[tuple[Path, re.Match[str]]] = []
     for path in sorted((*source_root.rglob("*.c"), *source_root.rglob("*.h"))):
-        text = _read_source_text(path)
+        text = _strip_c_comments(_read_source_text(path))
+        lines = text.splitlines()
         matches.extend(
             (path, match)
             for match in pattern.finditer(text)
-            if match.group("prefix").strip()
+            if _c_declaration_prefix_is_type(match.group("prefix"))
             and not match.group("prefix").lstrip().startswith("extern ")
+            and _c_declaration_is_file_scope(
+                lines,
+                text[: match.start()].count("\n") + 1,
+            )
         )
     if len(matches) != 1:
         raise RuleNotApplicable(
@@ -4404,6 +7888,43 @@ def _unique_source_array_definition(
         "capacity": match.group("capacity").strip() or "initializer_element_count",
         "declaration": " ".join(match.group("declaration").split()),
     }
+
+
+def _c_declaration_prefix_is_type(prefix: str) -> bool:
+    """Reject expression statements that merely resemble array declarations."""
+
+    normalized = " ".join(prefix.split())
+    if not normalized or re.fullmatch(r"[A-Za-z_][\w\s*]*", normalized) is None:
+        return False
+    tokens = set(re.findall(r"[A-Za-z_]\w*", normalized))
+    return not tokens.intersection(
+        {
+            "break",
+            "case",
+            "continue",
+            "else",
+            "for",
+            "goto",
+            "if",
+            "return",
+            "sizeof",
+            "switch",
+            "while",
+        }
+    )
+
+
+def _c_declaration_is_file_scope(
+    lines: Sequence[str], declaration_line: int
+) -> bool:
+    """Return true only for a declaration outside functions and aggregate bodies."""
+
+    if _enclosing_c_function(lines, declaration_line) is not None:
+        return False
+    return not any(
+        open_line < declaration_line <= close_line
+        for open_line, close_line in _c_brace_pairs(lines)
+    )
 
 
 def _disassembly_window(
@@ -4441,17 +7962,1148 @@ def _disassembly_window(
     return result.stdout
 
 
+def _pinned_source_file(
+    context: CampaignContext,
+    source: Mapping[str, Any],
+    relative_path: str,
+    label: str,
+) -> tuple[Path, str, dict[str, str]]:
+    source_root = _contained_directory(
+        context.root,
+        Path(source["source_root"]),
+        "source checkout",
+    )
+    path = _contained_file(context.root, source_root / relative_path, label)
+    return (
+        path,
+        _read_source_text(path),
+        {
+            "path": _relative_if_contained(context.root, path),
+            "sha256": _sha256_file(path),
+            "kind": "source_review",
+        },
+    )
+
+
+def _reference_defined_data_symbol(
+    context: CampaignContext,
+    source: Mapping[str, Any],
+    name: str,
+) -> dict[str, Any]:
+    cache = context.shared_cache.setdefault("reference_data_symbols", {})
+    if isinstance(cache, dict) and isinstance(cache.get(name), Mapping):
+        return dict(cache[name])
+    mapping = _mapping(source.get("mapping"))
+    reference_path = _contained_file(
+        context.root,
+        str(_mapping(mapping.get("reference_binary")).get("path") or ""),
+        "reference binary",
+    )
+    try:
+        result = subprocess.run(
+            ["nm", "-S", "--defined-only", str(reference_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise CertificateError(f"cannot enumerate reference data symbols: {exc}") from exc
+    pattern = re.compile(
+        r"^(?P<address>[0-9a-fA-F]+)\s+(?P<size>[0-9a-fA-F]+)\s+"
+        r"(?P<type>[bBdDrRsSgGcCvV])\s+(?P<name>\S+)$"
+    )
+    matches: list[dict[str, Any]] = []
+    for line in result.stdout.splitlines():
+        match = pattern.match(line.strip())
+        if match is None or match.group("name") != name:
+            continue
+        matches.append(
+            {
+                "name": name,
+                "address": _hex(int(match.group("address"), 16)),
+                "size_bytes": int(match.group("size"), 16),
+                "symbol_type": match.group("type"),
+                "reference_binary_path": _relative_if_contained(context.root, reference_path),
+                "reference_binary_sha256": _sha256_file(reference_path),
+            }
+        )
+    if len(matches) != 1:
+        raise RuleNotApplicable(f"reference build lacks one defined data symbol {name}")
+    if isinstance(cache, dict):
+        cache[name] = matches[0]
+    return matches[0]
+
+
+def _struct_output_initializers(
+    context: CampaignContext,
+    function: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Enumerate typed whole-struct output initializers in one frozen function."""
+
+    function_address = str(function.get("address") or "").lower()
+    cache = context.shared_cache.setdefault("struct_output_initializers", {})
+    if isinstance(cache, dict) and isinstance(cache.get(function_address), list):
+        return [dict(item) for item in cache[function_address]]
+
+    mapping = _reference_mapping(context)
+    source_mapping = _mapping(mapping.get("source"))
+    source_root = _contained_directory(
+        context.root,
+        str(source_mapping.get("path") or ""),
+        "source checkout",
+    )
+    if _git_head(source_root) != str(source_mapping.get("commit") or "").lower():
+        raise CertificateError("source checkout no longer matches the reference mapping commit")
+
+    operations = _mapping_rows(function.get("pcode_operations"))
+    producers: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
+    for operation in operations:
+        if str(operation.get("pcode") or "") != "PTRSUB":
+            continue
+        output = _mapping(operation.get("output"))
+        identity = _varnode_identity(output)
+        if identity is not None:
+            producers.setdefault(identity, []).append(operation)
+
+    results: list[dict[str, Any]] = []
+    for call in _mapping_rows(function.get("pcode_calls")):
+        if str(call.get("pcode") or "") != "CALL":
+            continue
+        try:
+            call_address = _hex_int(call.get("call_address"), "initializer CALL address")
+            callee_address = _hex_int(call.get("callee_address"), "initializer callee address")
+        except CertificateError:
+            continue
+        try:
+            callee_mapping = _reference_operation_mapping(context, mapping, callee_address)
+        except RuleNotApplicable:
+            continue
+        callee_names = _string_rows(callee_mapping.get("reference_function_names"))
+        try:
+            callee_source = _source_function_for_symbols(context, source_root, callee_names)
+        except RuleNotApplicable:
+            continue
+        contracts = _whole_struct_memset_contract(callee_source)
+        if not contracts:
+            continue
+        args = _mapping_rows(call.get("args"))
+        for contract in contracts:
+            argument_index = int(contract["parameter_index"])
+            if argument_index >= len(args):
+                continue
+            argument = args[argument_index]
+            identity = _varnode_identity(argument)
+            pointer_producers = [
+                item
+                for item in (producers.get(identity, []) if identity is not None else [])
+                if _hex_int(item.get("operation_address"), "stack pointer producer address")
+                <= call_address
+            ]
+            if not pointer_producers:
+                continue
+            latest_address = max(
+                _hex_int(item.get("operation_address"), "stack pointer producer address")
+                for item in pointer_producers
+            )
+            latest_producers = [
+                item
+                for item in pointer_producers
+                if _hex_int(item.get("operation_address"), "stack pointer producer address")
+                == latest_address
+            ]
+            if len(latest_producers) != 1:
+                continue
+            producer = latest_producers[0]
+            producer_address = _hex_int(
+                producer.get("operation_address"), "stack pointer producer address"
+            )
+            if producer_address > call_address:
+                continue
+            constants = [
+                int(item["constant"])
+                for item in _mapping_rows(producer.get("inputs"))
+                if isinstance(item.get("constant"), int)
+            ]
+            if len(constants) != 1 or constants[0] >= 0:
+                continue
+            struct_type = str(contract["struct_type"])
+            try:
+                layout = _reference_struct_layout(context, mapping, struct_type)
+                caller_mapping = _reference_operation_mapping(context, mapping, call_address)
+                caller_source = _source_function_for_symbols(
+                    context,
+                    source_root,
+                    _string_rows(caller_mapping.get("reference_function_names")),
+                )
+                source_call = _typed_output_source_call(
+                    caller_source,
+                    callee_function=str(callee_source["function"]),
+                    struct_type=struct_type,
+                )
+                struct_source = _source_struct_definition(
+                    context,
+                    source_root,
+                    struct_type,
+                    [str(item.get("name") or "") for item in layout["members"]],
+                )
+            except RuleNotApplicable:
+                continue
+            callee_context = {
+                "mapping": mapping,
+                "operation_mapping": callee_mapping,
+                "source_path": Path(str(callee_source["path"])),
+            }
+            callee_binding = _source_binding(
+                context,
+                callee_context,
+                source_function=str(callee_source["function"]),
+                source_lines=[int(contract["memset_line"])],
+            )
+            results.append(
+                {
+                    "call_address": _hex(call_address),
+                    "callee_address": _hex(callee_address),
+                    "output_parameter_index": argument_index,
+                    "output_parameter": str(contract["parameter_name"]),
+                    "stack_base_offset": constants[0],
+                    "memset_line": int(contract["memset_line"]),
+                    "memset_statement": str(contract["memset_statement"]),
+                    "compiled_layout": layout,
+                    "callee_source": callee_source,
+                    "callee_source_binding": callee_binding,
+                    "caller_source": caller_source,
+                    "struct_source": struct_source,
+                    **source_call,
+                }
+            )
+    unique: dict[tuple[int, int, str], dict[str, Any]] = {}
+    for result in results:
+        key = (
+            _hex_int(result["call_address"], "initializer CALL address"),
+            int(result["output_parameter_index"]),
+            str(result["source_variable"]),
+        )
+        unique[key] = result
+    normalized = [unique[key] for key in sorted(unique)]
+    if isinstance(cache, dict):
+        cache[function_address] = normalized
+    return [dict(item) for item in normalized]
+
+
+def _normalized_c_function_name(value: str) -> str:
+    name = str(value or "").split("@", 1)[0]
+    while True:
+        normalized = re.sub(
+            r"\.(?:constprop|isra|part|cold|lto_priv)(?:\.\d+|\.\d+\.\d+)?$",
+            "",
+            name,
+        )
+        if normalized == name:
+            return name
+        name = normalized
+
+
+def _source_function_for_symbols(
+    context: CampaignContext,
+    source_root: Path,
+    symbol_names: Sequence[str],
+) -> dict[str, Any]:
+    names = sorted(
+        {
+            _normalized_c_function_name(name)
+            for name in symbol_names
+            if _normalized_c_function_name(name)
+        }
+    )
+    if not names:
+        raise RuleNotApplicable("reference function has no source-level symbol name")
+    index = _source_function_index(context, source_root)
+    matches = [item for name in names for item in index.get(name, [])]
+    by_location = {
+        (str(item["path"]), int(item["start_line"]), int(item["end_line"])): item
+        for item in matches
+    }
+    if len(by_location) != 1:
+        raise RuleNotApplicable("reference symbol has no unique pinned source definition")
+    return dict(next(iter(by_location.values())))
+
+
+def _source_function_index(
+    context: CampaignContext,
+    source_root: Path,
+) -> dict[str, list[dict[str, Any]]]:
+    cache_key = f"source_function_index:{source_root.resolve()}"
+    cached = context.shared_cache.get(cache_key)
+    if isinstance(cached, dict):
+        return cached
+    index: dict[str, list[dict[str, Any]]] = {}
+    paths = sorted(
+        path
+        for suffix in ("*.c", "*.h")
+        for path in source_root.rglob(suffix)
+        if ".git" not in path.parts
+    )
+    for path in paths:
+        lines = _read_source_text(path).splitlines()
+        for open_line, close_line in _c_brace_pairs(lines):
+            header_start, header = _c_block_header(lines, open_line)
+            header_without_brace = header.rsplit("{", 1)[0]
+            matches = list(re.finditer(r"\b([A-Za-z_]\w*)\s*\(", header_without_brace))
+            if not matches:
+                continue
+            function = matches[-1].group(1)
+            if function in {"if", "for", "while", "switch"} or ";" in header_without_brace:
+                continue
+            index.setdefault(function, []).append(
+                {
+                    "function": function,
+                    "path": path,
+                    "lines": lines,
+                    "start_line": header_start,
+                    "open_line": open_line,
+                    "end_line": close_line,
+                    "header": header,
+                    "text": "\n".join(lines[header_start - 1 : close_line]),
+                }
+            )
+    context.shared_cache[cache_key] = index
+    return index
+
+
+def _registered_ubus_string_entry_contract(
+    context: CampaignContext,
+    source_root: Path,
+    *,
+    callee: str,
+) -> dict[str, Any]:
+    """Find a registered ubus callback that passes a parsed string to callee."""
+
+    index = _source_function_index(context, source_root)
+    matches: list[dict[str, Any]] = []
+    call_pattern = re.compile(
+        rf"\b{re.escape(callee)}\s*\(\s*(?P<argument>[A-Za-z_]\w*)\s*,",
+        re.DOTALL,
+    )
+    for callback, definitions in sorted(index.items()):
+        for definition in definitions:
+            body = str(definition.get("text") or "")
+            call = call_pattern.search(body)
+            if call is None:
+                continue
+            argument = call.group("argument")
+            getter = re.search(
+                rf"\b{re.escape(argument)}\s*=\s*blobmsg_get_string\s*\(\s*"
+                rf"(?P<table>[A-Za-z_]\w*)\s*\[\s*(?P<index>[^\]]+)\s*\]\s*\)\s*;",
+                body,
+            )
+            if getter is None or getter.start() >= call.start():
+                continue
+            table = getter.group("table")
+            table_index = " ".join(getter.group("index").split())
+            before_getter = body[: getter.start()]
+            parse = re.search(
+                rf"\bblobmsg_parse\s*\([^;]*\b{re.escape(table)}\b[^;]*\)\s*;",
+                before_getter,
+                re.DOTALL,
+            )
+            if parse is None:
+                continue
+            guard = re.search(
+                rf"if\s*\(\s*!\s*{re.escape(table)}\s*\[\s*"
+                rf"{re.escape(table_index)}\s*\]\s*\)\s*"
+                rf"(?:return\b[^;]*;|\{{[^}}]*\breturn\b[^;]*;[^}}]*\}})",
+                before_getter,
+                re.DOTALL,
+            )
+            if guard is None:
+                continue
+
+            path = Path(str(definition["path"]))
+            file_text = _read_source_text(path)
+            registration = re.search(
+                rf"UBUS_METHOD\s*\(\s*\"(?P<method>[^\"]+)\"\s*,\s*"
+                rf"{re.escape(callback)}\s*,",
+                file_text,
+            )
+            if registration is None:
+                continue
+            before_registration = file_text[: registration.start()]
+            arrays = list(
+                re.finditer(
+                    r"(?:static\s+)?(?:const\s+)?struct\s+ubus_method\s+"
+                    r"(?P<name>[A-Za-z_]\w*)\s*\[\s*\]\s*=\s*\{",
+                    before_registration,
+                )
+            )
+            if not arrays:
+                continue
+            methods_array = arrays[-1].group("name")
+            objects = []
+            for object_match in re.finditer(
+                r"(?:static\s+)?struct\s+ubus_object\s+(?P<name>[A-Za-z_]\w*)\s*="
+                r"\s*\{(?P<body>.*?)\n\s*\};",
+                file_text,
+                re.DOTALL,
+            ):
+                if re.search(
+                    rf"\.methods\s*=\s*&?\s*{re.escape(methods_array)}\b",
+                    object_match.group("body"),
+                ):
+                    objects.append(object_match.group("name"))
+            registered_objects = [
+                object_name
+                for object_name in objects
+                if re.search(
+                    rf"\b[A-Za-z_]\w*add_object\s*\(\s*&\s*"
+                    rf"{re.escape(object_name)}\s*\)",
+                    file_text,
+                )
+            ]
+            if len(registered_objects) != 1:
+                continue
+
+            start_line = int(definition["start_line"])
+            line_for = lambda position: start_line + body[:position].count("\n")
+            matches.append(
+                {
+                    "callback": callback,
+                    "method": registration.group("method"),
+                    "methods_array": methods_array,
+                    "ubus_object": registered_objects[0],
+                    "source_path": path,
+                    "source_sha256": _sha256_file(path),
+                    "parse_line": line_for(parse.start()),
+                    "guard_line": line_for(guard.start()),
+                    "getter_line": line_for(getter.start()),
+                    "call_line": line_for(call.start()),
+                    "request_table": table,
+                    "request_index": table_index,
+                    "request_string": argument,
+                    "registration_line": file_text[: registration.start()].count("\n") + 1,
+                    "object_registration": (
+                        f"{registered_objects[0]} uses {methods_array} and is passed to an "
+                        "add_object registration function"
+                    ),
+                }
+            )
+    if len(matches) != 1:
+        raise RuleNotApplicable(
+            "callee has no unique registered ubus callback with parsed-string control"
+        )
+    return matches[0]
+
+
+def _registered_ubus_callback_binary_binding(
+    context: CampaignContext,
+    source: Mapping[str, Any],
+    *,
+    callback: str,
+    method: str,
+) -> dict[str, Any]:
+    """Recover a stripped ubus handler from its frozen method-table record."""
+
+    mapping = _mapping(source.get("mapping"))
+    reference_path = _contained_file(
+        context.root,
+        str(_mapping(mapping.get("reference_binary")).get("path") or ""),
+        "reference binary",
+    )
+    reference_functions = [
+        (size, item)
+        for size, rows in _reference_function_index(context, reference_path).items()
+        for item in rows
+        if callback
+        in {
+            _normalized_c_function_name(str(name))
+            for name in _string_rows(item.get("names"))
+        }
+    ]
+    unique_reference = {
+        (int(item["address"]), size): (size, item)
+        for size, item in reference_functions
+    }
+    if len(unique_reference) != 1:
+        raise RuleNotApplicable("callback has no unique reference text symbol")
+    reference_size, reference_function = next(iter(unique_reference.values()))
+    reference_address = int(reference_function["address"])
+
+    layout = _reference_struct_layout(context, mapping, "ubus_method")
+    members = {str(item["name"]): item for item in _mapping_rows(layout.get("members"))}
+    if (
+        int(layout.get("size_bytes") or 0) <= 0
+        or int(_mapping(members.get("name")).get("offset_bytes", -1)) != 0
+        or int(_mapping(members.get("handler")).get("offset_bytes", -1)) != 8
+        or int(_mapping(members.get("name")).get("size_bytes") or 0) != 8
+        or int(_mapping(members.get("handler")).get("size_bytes") or 0) != 8
+    ):
+        raise RuleNotApplicable("reference ubus_method pointer layout changed")
+
+    frozen_data, elf_type, segments = _elf_layout(context.binary_path)
+    if elf_type != 2 or frozen_data[4:6] != b"\x02\x01":
+        raise RuleNotApplicable("ubus table recovery requires little-endian ELF64 ET_EXEC")
+    method_vmas = _elf_cstring_vmas(frozen_data, segments, method)
+    if not method_vmas:
+        raise RuleNotApplicable("frozen binary does not contain the ubus method name")
+    record_size = int(layout["size_bytes"])
+    candidates: list[dict[str, Any]] = []
+    fingerprint_keys = (
+        "normalized_function_sha256",
+        "constant_signature_sha256",
+        "call_topology_sha256",
+        "control_flow_sha256",
+        "relocation_shape_sha256",
+    )
+    for segment in segments:
+        if not int(segment["flags"]) & 2:
+            continue
+        segment_start = int(segment["file_offset"])
+        segment_end = segment_start + int(segment["file_size"])
+        for record_offset in range(segment_start, segment_end - record_size + 1, 8):
+            name_pointer = struct.unpack_from("<Q", frozen_data, record_offset)[0]
+            if name_pointer not in method_vmas:
+                continue
+            handler = struct.unpack_from("<Q", frozen_data, record_offset + 8)[0]
+            try:
+                frozen_fingerprint = _normalized_function_fingerprint(
+                    context.binary_path,
+                    handler,
+                    reference_size,
+                )
+            except RuleNotApplicable:
+                continue
+            if not all(
+                frozen_fingerprint[key] == reference_function[key]
+                for key in fingerprint_keys
+            ):
+                continue
+            record_vma = (
+                int(segment["virtual_address"])
+                + record_offset
+                - int(segment["file_offset"])
+            )
+            candidates.append(
+                {
+                    "method_record_address": _hex(record_vma),
+                    "method_name_address": _hex(name_pointer),
+                    "handler_address": _hex(handler),
+                    "handler_size_bytes": reference_size,
+                    "record_size_bytes": record_size,
+                    "frozen_function_fingerprint": {
+                        key: frozen_fingerprint[key] for key in fingerprint_keys
+                    },
+                }
+            )
+    if len(candidates) != 1:
+        raise RuleNotApplicable("frozen method table has no unique fingerprint-matched handler")
+    return {
+        "surface_kind": "registered_ubus_callback",
+        "method": method,
+        "callback": callback,
+        **candidates[0],
+        "reference_handler_address": _hex(reference_address),
+        "reference_handler_names": _string_rows(reference_function.get("names")),
+        "reference_binary_path": _relative_if_contained(context.root, reference_path),
+        "reference_binary_sha256": _sha256_file(reference_path),
+        "mapping_basis": "ubus_method_record_plus_function_fingerprint",
+        "constants_match": True,
+        "call_topology_match": True,
+        "compiled_layout": layout,
+    }
+
+
+def _elf_cstring_vmas(
+    data: bytes,
+    segments: Sequence[Mapping[str, int]],
+    value: str,
+) -> set[int]:
+    needle = value.encode("utf-8") + b"\0"
+    results: set[int] = set()
+    for segment in segments:
+        start = int(segment["file_offset"])
+        end = start + int(segment["file_size"])
+        cursor = start
+        while True:
+            position = data.find(needle, cursor, end)
+            if position < 0:
+                break
+            results.add(
+                int(segment["virtual_address"])
+                + position
+                - int(segment["file_offset"])
+            )
+            cursor = position + 1
+    return results
+
+
+def _whole_struct_memset_contract(source: Mapping[str, Any]) -> list[dict[str, Any]]:
+    function = str(source.get("function") or "")
+    text = str(source.get("text") or "")
+    signature = re.search(
+        rf"\b{re.escape(function)}\s*\((?P<parameters>.*?)\)\s*\{{",
+        text,
+        re.DOTALL,
+    )
+    if signature is None:
+        return []
+    parameters = _split_c_parameters(signature.group("parameters"))
+    lines = list(source.get("lines") or [])
+    open_line = int(source.get("open_line") or 0)
+    end_line = int(source.get("end_line") or 0)
+    results: list[dict[str, Any]] = []
+    for index, parameter in enumerate(parameters):
+        typed = re.fullmatch(
+            r"\s*(?:const\s+)?struct\s+(?P<type>[A-Za-z_]\w*)\s*\*\s*"
+            r"(?P<name>[A-Za-z_]\w*)\s*",
+            parameter,
+        )
+        if typed is None:
+            continue
+        parameter_name = typed.group("name")
+        pattern = re.compile(
+            rf"^\s*memset\s*\(\s*{re.escape(parameter_name)}\s*,\s*0\s*,\s*"
+            rf"sizeof\s*\(\s*\*\s*{re.escape(parameter_name)}\s*\)\s*\)\s*;\s*$"
+        )
+        memset_lines = [
+            line_number
+            for line_number in range(open_line + 1, end_line)
+            if pattern.match(lines[line_number - 1])
+        ]
+        if len(memset_lines) != 1:
+            continue
+        memset_line = memset_lines[0]
+        prefix = "\n".join(lines[open_line: memset_line - 1])
+        if re.search(r"\b(?:if|for|while|switch|return|goto)\b|[{}]", prefix):
+            continue
+        results.append(
+            {
+                "parameter_index": index,
+                "parameter_name": parameter_name,
+                "struct_type": typed.group("type"),
+                "memset_line": memset_line,
+                "memset_statement": lines[memset_line - 1].strip(),
+            }
+        )
+    return results
+
+
+def _split_c_parameters(value: str) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    for index, character in enumerate(value):
+        if character in "([":
+            depth += 1
+        elif character in ")]":
+            depth = max(0, depth - 1)
+        elif character == "," and depth == 0:
+            parts.append(value[start:index].strip())
+            start = index + 1
+    tail = value[start:].strip()
+    if tail and tail != "void":
+        parts.append(tail)
+    return parts
+
+
+def _typed_output_source_call(
+    caller: Mapping[str, Any],
+    *,
+    callee_function: str,
+    struct_type: str,
+) -> dict[str, Any]:
+    text = str(caller.get("text") or "")
+    start_line = int(caller.get("start_line") or 0)
+    calls = list(
+        re.finditer(
+            rf"\b{re.escape(callee_function)}\s*\((?P<args>[^;]*?)\)\s*;",
+            text,
+            re.DOTALL,
+        )
+    )
+    matches: list[dict[str, Any]] = []
+    for call in calls:
+        variables = re.findall(r"&\s*([A-Za-z_]\w*)\b", call.group("args"))
+        for variable in sorted(set(variables)):
+            declarations = list(
+                re.finditer(
+                    rf"\bstruct\s+{re.escape(struct_type)}\s+"
+                    rf"{re.escape(variable)}\s*;",
+                    text[: call.start()],
+                )
+            )
+            if len(declarations) != 1:
+                continue
+            matches.append(
+                {
+                    "source_variable": variable,
+                    "source_declaration_line": (
+                        start_line + text[: declarations[0].start()].count("\n")
+                    ),
+                    "source_call_line": start_line + text[: call.start()].count("\n"),
+                    "source_call_statement": " ".join(call.group(0).split()),
+                }
+            )
+    if len(matches) != 1:
+        raise RuleNotApplicable("caller has no unique typed address-of output call")
+    return matches[0]
+
+
+def _source_struct_definition(
+    context: CampaignContext,
+    source_root: Path,
+    name: str,
+    member_names: Sequence[str],
+) -> dict[str, Any]:
+    cache = context.shared_cache.setdefault("source_struct_definitions", {})
+    if isinstance(cache, dict) and isinstance(cache.get(name), Mapping):
+        return dict(cache[name])
+    matches: list[dict[str, Any]] = []
+    for suffix in ("*.c", "*.h"):
+        for path in sorted(source_root.rglob(suffix)):
+            if ".git" in path.parts:
+                continue
+            lines = _read_source_text(path).splitlines()
+            for open_line, close_line in _c_brace_pairs(lines):
+                header_start, header = _c_block_header(lines, open_line)
+                if re.search(rf"\bstruct\s+{re.escape(name)}\s*\{{", header) is None:
+                    continue
+                body = "\n".join(lines[header_start - 1 : close_line])
+                if not all(re.search(rf"\b{re.escape(member)}\b", body) for member in member_names):
+                    continue
+                matches.append(
+                    {
+                        "name": name,
+                        "path": path,
+                        "start_line": header_start,
+                        "end_line": close_line,
+                        "declaration": " ".join(body.split()),
+                    }
+                )
+    if len(matches) != 1:
+        raise RuleNotApplicable("compiled struct has no unique complete source declaration")
+    if isinstance(cache, dict):
+        cache[name] = matches[0]
+    return dict(matches[0])
+
+
+def _reference_struct_layout(
+    context: CampaignContext,
+    mapping: Mapping[str, Any],
+    name: str,
+) -> dict[str, Any]:
+    cache = context.shared_cache.setdefault("reference_struct_layouts", {})
+    if isinstance(cache, dict) and isinstance(cache.get(name), Mapping):
+        return dict(cache[name])
+    try:
+        from elftools.elf.elffile import ELFFile  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise CertificateError("pyelftools is required for compiled struct layouts") from exc
+    reference_path = _contained_file(
+        context.root,
+        str(_mapping(mapping.get("reference_binary")).get("path") or ""),
+        "reference binary",
+    )
+    layouts: dict[tuple[Any, ...], dict[str, Any]] = {}
+    with reference_path.open("rb") as handle:
+        elf = ELFFile(handle)
+        if not elf.has_dwarf_info():
+            raise RuleNotApplicable("reference binary has no DWARF struct layout")
+        for compilation_unit in elf.get_dwarf_info().iter_CUs():
+            for die in compilation_unit.iter_DIEs():
+                structure = None
+                binding_kind = ""
+                if die.tag == "DW_TAG_structure_type" and _dwarf_name(die) == name:
+                    structure = die
+                    binding_kind = "named_structure"
+                elif die.tag == "DW_TAG_typedef" and _dwarf_name(die) == name:
+                    target = die.get_DIE_from_attribute("DW_AT_type")
+                    visited: set[int] = set()
+                    while target is not None and target.tag in {
+                        "DW_TAG_typedef",
+                        "DW_TAG_const_type",
+                        "DW_TAG_volatile_type",
+                    }:
+                        if int(target.offset) in visited:
+                            target = None
+                            break
+                        visited.add(int(target.offset))
+                        target = target.get_DIE_from_attribute("DW_AT_type")
+                    if target is not None and target.tag == "DW_TAG_structure_type":
+                        structure = target
+                        binding_kind = "typedef_to_structure"
+                if structure is None:
+                    continue
+                size_attr = structure.attributes.get("DW_AT_byte_size")
+                if size_attr is None or not structure.has_children:
+                    continue
+                members: list[dict[str, Any]] = []
+                valid = True
+                for child in structure.iter_children():
+                    if child.tag != "DW_TAG_member":
+                        continue
+                    member_name = _dwarf_name(child)
+                    location = child.attributes.get("DW_AT_data_member_location")
+                    member_type = child.get_DIE_from_attribute("DW_AT_type")
+                    member_size = _dwarf_type_size(member_type, set())
+                    if (
+                        not member_name
+                        or location is None
+                        or not isinstance(location.value, int)
+                        or member_size is None
+                        or member_size <= 0
+                    ):
+                        valid = False
+                        break
+                    members.append(
+                        {
+                            "name": member_name,
+                            "offset_bytes": int(location.value),
+                            "size_bytes": int(member_size),
+                        }
+                    )
+                if not valid or not members:
+                    continue
+                size = int(size_attr.value)
+                if any(
+                    int(item["offset_bytes"]) + int(item["size_bytes"]) > size
+                    for item in members
+                ):
+                    continue
+                key = (
+                    size,
+                    tuple(
+                        (item["name"], item["offset_bytes"], item["size_bytes"])
+                        for item in members
+                    ),
+                )
+                layouts[key] = {
+                    "name": name,
+                    "type_binding": binding_kind,
+                    "size_bytes": size,
+                    "members": members,
+                    "reference_binary_path": _relative_if_contained(context.root, reference_path),
+                    "reference_binary_sha256": _sha256_file(reference_path),
+                }
+    if len(layouts) != 1:
+        raise RuleNotApplicable("reference DWARF has no unique complete struct layout")
+    result = next(iter(layouts.values()))
+    if isinstance(cache, dict):
+        cache[name] = result
+    return dict(result)
+
+
+def _dwarf_name(die: Any) -> str:
+    attribute = die.attributes.get("DW_AT_name") if die is not None else None
+    value = attribute.value if attribute is not None else b""
+    return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else str(value or "")
+
+
+def _dwarf_type_size(die: Any, seen: set[int]) -> int | None:
+    if die is None or int(die.offset) in seen:
+        return None
+    seen.add(int(die.offset))
+    size = die.attributes.get("DW_AT_byte_size")
+    if size is not None and isinstance(size.value, int):
+        return int(size.value)
+    if die.tag == "DW_TAG_array_type":
+        element = die.get_DIE_from_attribute("DW_AT_type")
+        element_size = _dwarf_type_size(element, seen)
+        if element_size is None:
+            return None
+        count = 1
+        for child in die.iter_children():
+            if child.tag != "DW_TAG_subrange_type":
+                continue
+            count_attr = child.attributes.get("DW_AT_count")
+            upper = child.attributes.get("DW_AT_upper_bound")
+            lower = child.attributes.get("DW_AT_lower_bound")
+            if count_attr is not None and isinstance(count_attr.value, int):
+                count *= int(count_attr.value)
+            elif upper is not None and isinstance(upper.value, int):
+                lower_value = int(lower.value) if lower is not None else 0
+                count *= int(upper.value) - lower_value + 1
+            else:
+                return None
+        return element_size * count
+    target = die.get_DIE_from_attribute("DW_AT_type")
+    return _dwarf_type_size(target, seen) if target is not None else None
+
+
+def _cfg_dominance_relation(
+    function: Mapping[str, Any],
+    before_address: str,
+    after_address: str,
+) -> dict[str, Any]:
+    from binary_agent.analysis.program_index import IndexedBasicBlock, _cfg_event_relation
+
+    name = str(function.get("name") or "")
+    blocks = [
+        IndexedBasicBlock(
+            function_name=name,
+            start_address=str(item.get("start") or ""),
+            end_address=str(item.get("end") or ""),
+            successors=tuple(str(value) for value in item.get("successors", []) if value),
+        )
+        for item in _mapping_rows(function.get("basic_blocks"))
+    ]
+    relation = _cfg_event_relation(blocks, before_address, after_address)
+    return {
+        "relation": relation.relation,
+        "feasible": relation.feasible,
+        "before_dominates_after": relation.before_dominates_after,
+        "same_block": relation.same_block,
+        "evidence": relation.evidence,
+    }
+
+
+def _struct_member_use_lines(
+    source: Mapping[str, Any],
+    variable: str,
+    member_names: Sequence[str],
+    *,
+    after_line: int,
+) -> list[int]:
+    lines = list(source.get("lines") or [])
+    end_line = int(source.get("end_line") or 0)
+    patterns = [
+        re.compile(rf"\b{re.escape(variable)}\s*\.\s*{re.escape(name)}\b")
+        for name in member_names
+        if name
+    ]
+    return [
+        line_number
+        for line_number in range(after_line + 1, end_line + 1)
+        if any(pattern.search(lines[line_number - 1]) for pattern in patterns)
+    ]
+
+
+def _stack_var_name(value: Mapping[str, Any]) -> str:
+    stack_ref = _mapping(value.get("stack_ref"))
+    return str(stack_ref.get("var_name") or value.get("var_name") or "")
+
+
+def _varnode_identity(value: Mapping[str, Any]) -> tuple[str, str, int] | None:
+    address_space = str(value.get("address_space") or "")
+    address = str(value.get("address") or "").lower()
+    size = int(value.get("size_bytes") or 0)
+    if not address_space or not address or size <= 0:
+        return None
+    return address_space, address, size
+
+
+def _integer_value(value: Any, label: str) -> int:
+    if isinstance(value, bool):
+        raise CertificateError(f"{label} is not an integer")
+    if isinstance(value, int):
+        return value
+    try:
+        return int(str(value), 0)
+    except (TypeError, ValueError) as exc:
+        raise CertificateError(f"{label} is not an integer") from exc
+
+
+def _string_rows(value: Any) -> list[str]:
+    return [str(item) for item in value] if isinstance(value, list) else []
+
+
+def _deduplicated_source_refs(
+    context: CampaignContext,
+    paths: Sequence[Path],
+) -> list[dict[str, str]]:
+    refs: dict[str, dict[str, str]] = {}
+    for path in paths:
+        relative = _relative_if_contained(context.root, path)
+        refs[relative] = {
+            "path": relative,
+            "sha256": _sha256_file(path),
+            "kind": "source_review",
+        }
+    return [refs[key] for key in sorted(refs)]
+
+
 def _source_function_prefix(lines: Sequence[str], function: str, line_number: int) -> str:
-    target_index = line_number - 1
-    start = -1
-    function_pattern = re.compile(rf"\b{re.escape(function)}\s*\(")
-    for index in range(target_index, -1, -1):
-        if function_pattern.search(lines[index]):
-            start = index
-            break
-    if start < 0:
+    function_pattern = _source_function_pattern(function)
+    matches: list[int] = []
+    for open_line, close_line in _c_brace_pairs(lines):
+        if not (open_line <= line_number <= close_line):
+            continue
+        header_start, header = _c_block_header(lines, open_line)
+        if function_pattern.search(header) and not re.search(
+            r"\b(?:if|for|while|switch)\s*\(", header
+        ):
+            matches.append(header_start)
+    if len(matches) != 1:
         raise RuleNotApplicable("cannot locate the exact source function definition")
-    return "\n".join(lines[start : target_index + 1])
+    return "\n".join(lines[matches[0] - 1 : line_number])
+
+
+def _source_function_text(lines: Sequence[str], function: str, line_number: int) -> str:
+    function_pattern = _source_function_pattern(function)
+    for open_line, close_line in _c_brace_pairs(lines):
+        if not (open_line <= line_number <= close_line):
+            continue
+        header_start, header = _c_block_header(lines, open_line)
+        if function_pattern.search(header) and not re.search(
+            r"\b(?:if|for|while|switch)\s*\(", header
+        ):
+            return "\n".join(lines[header_start - 1 : close_line])
+    raise RuleNotApplicable("cannot locate the complete exact source function")
+
+
+def _source_function_pattern(function: str) -> re.Pattern[str]:
+    """Match an exact source name or its compiler-generated clone suffix."""
+
+    names = [function]
+    base = function
+    suffix = re.compile(
+        r"(?:\.(?:lto_priv|constprop|isra|part)\.\d+|\.cold(?:\.\d+)?)$"
+    )
+    while True:
+        stripped = suffix.sub("", base)
+        if stripped == base:
+            break
+        base = stripped
+        names.append(base)
+    alternatives = "|".join(re.escape(name) for name in sorted(set(names), key=len, reverse=True))
+    return re.compile(rf"\b(?:{alternatives})\s*\(")
+
+
+def _busybox_getopt32_contract(
+    context: CampaignContext, mapping: Mapping[str, Any]
+) -> dict[str, Any]:
+    source_ref = _mapping(mapping.get("source"))
+    source_root = _contained_directory(
+        context.root, str(source_ref.get("path") or ""), "BusyBox source checkout"
+    )
+    expected_commit = str(source_ref.get("commit") or "").lower()
+    if _git_head(source_root) != expected_commit:
+        raise CertificateError("BusyBox source checkout changed")
+    implementation = _contained_file(
+        context.root, source_root / "libbb" / "getopt32.c", "BusyBox getopt32 implementation"
+    )
+    noreturn_header = _contained_file(
+        context.root, source_root / "include" / "libbb.h", "BusyBox libbb header"
+    )
+    lines = _read_source_text(implementation).splitlines()
+    definition_line = next(
+        (
+            index
+            for index, line in enumerate(lines, start=1)
+            if re.search(r"^vgetopt32\s*\(", line)
+        ),
+        0,
+    )
+    if not definition_line:
+        raise CertificateError("BusyBox source lacks vgetopt32")
+    implementation_text = "\n".join(lines)
+    start = implementation_text.find("static uint32_t\nvgetopt32(")
+    end = implementation_text.find("\n}\n\nuint32_t FAST_FUNC\ngetopt32(", start)
+    if start < 0 or end < 0:
+        raise CertificateError("BusyBox vgetopt32 function extent is unresolved")
+    function_text = implementation_text[start : end + 2]
+    required_patterns = {
+        "option_bit": r"on_off->switch_on\s*=\s*\(1U\s*<<\s*c\)\s*;",
+        "output_slot": r"on_off->optarg\s*=\s*va_arg\s*\(p,\s*void\s*\*\*\)\s*;",
+        "returned_bit": r"flags\s*\|=\s*on_off->switch_on\s*\^\s*trigger\s*;",
+        "argument_store": r"\*\(char\s*\*\*\)\(on_off->optarg\)\s*=\s*optarg\s*;",
+        "return": r"return\s+flags\s*;",
+        "error": r"if\s*\(dont_die_flag\s*!=\s*'!'\)\s*bb_show_usage\s*\(\s*\)\s*;",
+    }
+    matches: dict[str, re.Match[str]] = {}
+    for label, pattern in required_patterns.items():
+        match = re.search(pattern, function_text, re.DOTALL)
+        if match is None:
+            raise CertificateError(f"BusyBox getopt32 contract lost {label}")
+        matches[label] = match
+    if not (
+        matches["returned_bit"].start()
+        < matches["argument_store"].start()
+        < matches["return"].start()
+    ):
+        raise CertificateError("BusyBox getopt32 output ordering changed")
+    header_text = _read_source_text(noreturn_header)
+    noreturn = re.search(
+        r"void\s+bb_show_usage\s*\(\s*void\s*\)\s*NORETURN\s+FAST_FUNC\s*;",
+        header_text,
+    )
+    if noreturn is None:
+        raise CertificateError("BusyBox usage error path is no longer noreturn")
+    return {
+        "source_commit": expected_commit,
+        "implementation": {
+            "path": _relative_if_contained(context.root, implementation),
+            "sha256": _sha256_file(implementation),
+            "kind": "source_review",
+        },
+        "noreturn_header": {
+            "path": _relative_if_contained(context.root, noreturn_header),
+            "sha256": _sha256_file(noreturn_header),
+            "kind": "source_review",
+        },
+        "function": "vgetopt32",
+        "option_bit_statement": " ".join(matches["option_bit"].group(0).split()),
+        "argument_store_statement": " ".join(matches["argument_store"].group(0).split()),
+        "success_contract": (
+            "a returned option bit has its required argument stored before return; "
+            "ordinary parse errors terminate through bb_show_usage"
+        ),
+        "source_error_path": " ".join(matches["error"].group(0).split()),
+    }
+
+
+def _busybox_parse_rtattr_contract(
+    context: CampaignContext, mapping: Mapping[str, Any]
+) -> dict[str, Any]:
+    source_ref = _mapping(mapping.get("source"))
+    source_root = _contained_directory(
+        context.root, str(source_ref.get("path") or ""), "BusyBox source checkout"
+    )
+    expected_commit = str(source_ref.get("commit") or "").lower()
+    if _git_head(source_root) != expected_commit:
+        raise CertificateError("BusyBox source checkout changed")
+    implementation = _contained_file(
+        context.root,
+        source_root / "networking" / "libiproute" / "libnetlink.c",
+        "BusyBox parse_rtattr implementation",
+    )
+    lines = _read_source_text(implementation).splitlines()
+    definitions = [
+        index
+        for index, line in enumerate(lines, start=1)
+        if re.search(r"\bparse_rtattr\s*\(", line)
+    ]
+    if len(definitions) != 1:
+        raise CertificateError("BusyBox source has no unique parse_rtattr definition")
+    function_text = _source_function_text(
+        lines, "parse_rtattr", min(len(lines), definitions[0] + 1)
+    )
+    initialization = re.search(
+        r"\{\s*memset\s*\(\s*tb\s*,\s*0\s*,\s*"
+        r"\(\s*max\s*\+\s*1\s*\)\s*\*\s*sizeof\s*\(\s*tb\s*\[\s*0\s*\]\s*\)\s*\)\s*;",
+        function_text,
+        re.DOTALL,
+    )
+    bounded_store = re.search(
+        r"if\s*\(\s*rta->rta_type\s*<=\s*max\s*\)\s*\{\s*"
+        r"tb\s*\[\s*rta->rta_type\s*\]\s*=\s*rta\s*;",
+        function_text,
+        re.DOTALL,
+    )
+    if initialization is None or bounded_store is None:
+        raise CertificateError("BusyBox parse_rtattr no longer has the proven table contract")
+    return {
+        "source_commit": expected_commit,
+        "implementation": {
+            "path": _relative_if_contained(context.root, implementation),
+            "sha256": _sha256_file(implementation),
+            "kind": "source_review",
+        },
+        "function": "parse_rtattr",
+        "initialization_statement": " ".join(initialization.group(0).lstrip("{").split()),
+        "bounded_store_statement": " ".join(bounded_store.group(0).split()),
+        "path_coverage": "zeroing is the first function statement and precedes the parser loop",
+    }
 
 
 def _libubox_blobmsg_contract(
@@ -4703,8 +9355,23 @@ def _sdk_api_contract(
     *,
     api: str,
 ) -> dict[str, Any]:
-    if api not in {"stat", "glob", "read"}:
+    if api not in {
+        "stat",
+        "lstat",
+        "fstat",
+        "glob",
+        "read",
+        "recv",
+        "fscanf",
+        "scanf",
+        "sscanf",
+        "inet_aton",
+        "inet_pton",
+    }:
         raise CertificateError(f"unsupported checked API contract: {api}")
+    cache = context.shared_cache.setdefault("sdk_api_contracts", {})
+    if isinstance(cache, dict) and isinstance(cache.get(api), Mapping):
+        return dict(cache[api])
     sdk_ref = _mapping(mapping.get("sdk"))
     sdk_archive = _contained_file(
         context.root,
@@ -4721,45 +9388,125 @@ def _sdk_api_contract(
         raise CertificateError("extracted pinned SDK is missing")
     relative_header = {
         "stat": Path("sys/stat.h"),
+        "lstat": Path("sys/stat.h"),
+        "fstat": Path("sys/stat.h"),
         "glob": Path("glob.h"),
         "read": Path("unistd.h"),
+        "recv": Path("sys/socket.h"),
+        "fscanf": Path("stdio.h"),
+        "scanf": Path("stdio.h"),
+        "sscanf": Path("stdio.h"),
+        "inet_aton": Path("arpa/inet.h"),
+        "inet_pton": Path("arpa/inet.h"),
     }[api]
     headers = sorted((sdk_root / "staging_dir").glob(f"toolchain-*/include/{relative_header}"))
     headers = [
         _contained_file(context.root, header, f"SDK {api} header") for header in headers
     ]
-    if len(headers) != 1:
+    header: Path | None = headers[0] if len(headers) == 1 else None
+    archive_member = ""
+    archive_member_hash = ""
+    if header is not None:
+        header_text = _read_source_text(header)
+        header_ref = {
+            "path": _relative_if_contained(context.root, header),
+            "sha256": _sha256_file(header),
+            "kind": "source_review",
+        }
+    elif api in {
+        "recv",
+        "fscanf",
+        "scanf",
+        "sscanf",
+        "inet_aton",
+        "inet_pton",
+    }:
+        try:
+            listing = subprocess.run(
+                ["tar", "--zstd", "-tf", str(sdk_archive)],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env={**os.environ, "LC_ALL": "C"},
+            )
+            members = [
+                item
+                for item in listing.stdout.splitlines()
+                if item.endswith(f"/include/{relative_header.as_posix()}")
+            ]
+            if len(members) != 1:
+                raise CertificateError(f"pinned SDK archive has no unique {api} header")
+            archive_member = members[0]
+            extraction = subprocess.run(
+                ["tar", "--zstd", "-xOf", str(sdk_archive), archive_member],
+                check=True,
+                capture_output=True,
+                timeout=30,
+                env={**os.environ, "LC_ALL": "C"},
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise CertificateError(f"cannot read {api} header from pinned SDK: {exc}") from exc
+        header_text = extraction.stdout.decode("utf-8")
+        archive_member_hash = hashlib.sha256(extraction.stdout).hexdigest()
+        header_ref = {
+            "path": _relative_if_contained(context.root, sdk_archive),
+            "sha256": sdk_hash,
+            "kind": "source_archive",
+        }
+    else:
         raise CertificateError(f"pinned SDK does not contain exactly one {api} header")
-    header = headers[0]
-    header_text = _read_source_text(header)
     declaration = {
         "stat": r"int\s+stat\s*\([^;]*struct\s+stat\s*\*[^;]*\)\s*;",
+        "lstat": r"int\s+lstat\s*\([^;]*struct\s+stat\s*\*[^;]*\)\s*;",
+        "fstat": r"int\s+fstat\s*\(\s*int\s*,\s*struct\s+stat\s*\*\s*\)\s*;",
         "glob": r"int\s+glob\s*\([^;]*glob_t\s*\*[^;]*\)\s*;",
         "read": r"ssize_t\s+read\s*\([^;]*void\s*\*[^;]*size_t[^;]*\)\s*;",
+        "recv": r"ssize_t\s+recv\s*\(\s*int\s*,\s*void\s*\*\s*,\s*size_t\s*,\s*int\s*\)\s*;",
+        "fscanf": r"int\s+fscanf\s*\(\s*FILE\s*\*\s*__restrict\s*,\s*const\s+char\s*\*\s*__restrict\s*,\s*\.\.\.\s*\)\s*;",
+        "scanf": r"int\s+scanf\s*\(\s*const\s+char\s*\*\s*__restrict\s*,\s*\.\.\.\s*\)\s*;",
+        "sscanf": r"int\s+sscanf\s*\(\s*const\s+char\s*\*\s*__restrict\s*,\s*const\s+char\s*\*\s*__restrict\s*,\s*\.\.\.\s*\)\s*;",
+        "inet_aton": r"int\s+inet_aton\s*\(\s*const\s+char\s*\*\s*,\s*struct\s+in_addr\s*\*\s*\)\s*;",
+        "inet_pton": r"int\s+inet_pton\s*\(\s*int\s*,\s*const\s+char\s*\*\s*__restrict\s*,\s*void\s*\*\s*__restrict\s*\)\s*;",
     }[api]
     match = re.search(declaration, header_text, re.DOTALL)
     if match is None:
         raise CertificateError(f"pinned SDK header lacks the {api} output signature")
-    return {
+    result = {
         "sdk_archive": {
             "path": _relative_if_contained(context.root, sdk_archive),
             "sha256": sdk_hash,
             "kind": "source_review",
         },
-        "api_header": {
-            "path": _relative_if_contained(context.root, header),
-            "sha256": _sha256_file(header),
-            "kind": "source_review",
-        },
+        "api_header": header_ref,
+        **(
+            {
+                "api_header_archive_member": archive_member,
+                "api_header_member_sha256": archive_member_hash,
+            }
+            if archive_member
+            else {}
+        ),
         "api": api,
         "declaration": " ".join(match.group(0).split()),
         "success_contract": (
-            "a positive return is no greater than the requested byte count"
+            "a nonnegative return is the number of initialized bytes and is no greater than the requested byte count"
+            if api == "recv"
+            else "each successful, nonsuppressed conversion stores through its corresponding variadic output pointer"
+            if api in {"fscanf", "scanf", "sscanf"}
+            else "a nonzero return initializes the caller-provided struct in_addr"
+            if api == "inet_aton"
+            else "return value 1 initializes the caller-provided network-address object"
+            if api == "inet_pton"
+            else "a positive return is no greater than the requested byte count"
             if api == "read"
             else "return value 0 initializes the caller-provided output object"
         ),
         "sdk_sha256": sdk_hash,
     }
+    if isinstance(cache, dict):
+        cache[api] = result
+    return dict(result)
 
 
 def _sdk_process_contract(

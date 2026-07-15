@@ -23,11 +23,20 @@ from binary_agent.adjudication_investigation import (
 from binary_agent.adjudication_certificates import (
     C_DECLARATION_INIT_RULE,
     C_CHECKED_API_OUTPUT_RULE,
+    C_CHECKED_NETWORK_PARSE_RULE,
+    C_API_OUTPUT_ADDRESS_RULE,
     C_ARRAY_OBJECT_RULE,
     C_GUARDED_FIXED_ARRAY_RULE,
     C_HTML_ESCAPE_RULE,
     C_JAIL_ARGV_RULE,
     C_READ_TERMINATOR_RULE,
+    C_TYPED_LINK_STORE_RULE,
+    C_BOUNDED_WRAPPER_READ_RULE,
+    C_MASKED_RING_INDEX_RULE,
+    C_TRAILING_ESCAPE_RULE,
+    C_MACRO_TYPED_MEMBER_RULE,
+    C_BOUNDED_TYPED_BYTE_STORE_RULE,
+    C_STRUCT_OUTPUT_INIT_RULE,
     C_FIXED_PATH_EFFECT_RULE,
     C_RETURNED_ALLOCATION_RULE,
     C_COLLECTION_CLEANUP_RULE,
@@ -52,6 +61,9 @@ from binary_agent.adjudication_certificates import (
     C_TRUSTED_ALLOC_RULE,
     C_CLIENT_CONTEXT_RULE,
     LIBUBOX_BLOBMSG_VALUE_RULE,
+    BUSYBOX_RTATTR_INIT_RULE,
+    BUSYBOX_GETOPT32_OUTPUT_RULE,
+    C_FIXED_RECV_OUTPUT_RULE,
     C_GUARDED_POINTER_RULE,
     C_IMMEDIATE_ASSIGNMENT_RULE,
     C_INPLACE_RULE,
@@ -63,8 +75,12 @@ from binary_agent.adjudication_certificates import (
     GHIDRA_IMPORT_CAST_RULE,
     LIBUBOX_LIST_RULE,
     LIBUBOX_BLOBMSG_INIT_RULE,
+    LIBUBOX_NAMED_BLOBMSG_INIT_RULE,
     LIBUBOX_CALLOC_INIT_RULE,
+    LIBUBOX_UNCHECKED_CALLOC_BUG_RULE,
     LIBUBOX_FOREACH_INIT_RULE,
+    C_FORMATTED_INPUT_OUTPUT_RULE,
+    C_STAT_CALL_EFFECT_RULE,
     REGISTERED_RULES,
     RULE_BASES,
     RULE_DECISIONS,
@@ -342,14 +358,15 @@ def run_autoprove(
         }
         if admit:
             admitted_path = root / "reviews" / f"{unit_id}.json"
-            if admitted_path.exists():
-                proposal_ref["admission_status"] = "preserved_existing_review"
-            else:
-                admit_review(root, proposal_path)
-                admitted_units += 1
-                proposal_ref["admitted"] = True
-                proposal_ref["admission_status"] = "admitted"
-                proposal_ref["admitted_sha256"] = _sha256_file(admitted_path)
+            # Admission is a resulting state, not a count of writes performed by
+            # this invocation.  Revalidate and normalize an existing review in
+            # place so identical reruns are stable without replacing a separately
+            # authored, valid review for the same unit.
+            admit_review(root, admitted_path if admitted_path.exists() else proposal_path)
+            admitted_units += 1
+            proposal_ref["admitted"] = True
+            proposal_ref["admission_status"] = "admitted"
+            proposal_ref["admitted_sha256"] = _sha256_file(admitted_path)
         proposal_refs.append(proposal_ref)
 
     summary = {
@@ -657,6 +674,29 @@ def _decision_for_certificate(
             "Exact caller source passes the complete local table to pinned libubox "
             "blobmsg_parse, whose first statement zero-initializes every slot before any return."
         )
+    elif rule_id == LIBUBOX_NAMED_BLOBMSG_INIT_RULE:
+        rationale = (
+            "Exact source passes the complete named local table to pinned libubox "
+            "blobmsg_parse, whose first statement zero-initializes every slot before "
+            "the selected table access."
+        )
+    elif rule_id == C_API_OUTPUT_ADDRESS_RULE:
+        rationale = (
+            "Exact source and the pinned SDK signature show the call passes only the local "
+            "object's address as a write-only stat-family output; the alleged value read is absent."
+        )
+    elif rule_id == C_FORMATTED_INPUT_OUTPUT_RULE:
+        rationale = (
+            "The candidate local appears only in Ghidra's same-address call-effect annotation; "
+            "the exact scanf-family runtime call receives source-level output addresses, not "
+            "the alleged uninitialized values."
+        )
+    elif rule_id == C_STAT_CALL_EFFECT_RULE:
+        rationale = (
+            "The candidate local appears only in Ghidra's same-address call-effect annotation; "
+            "every stat-family call on the exact source statement passes a local struct's address "
+            "rather than reading its previous contents."
+        )
     elif rule_id == C_ASSIGNMENT_RULE:
         rationale = (
             "Exact byte-matched source unconditionally assigns the local before a terminating "
@@ -677,6 +717,13 @@ def _decision_for_certificate(
             "Exact caller source returns on calloc_a failure, while the pinned libubox success "
             "path assigns every auxiliary output pointer before the selected use."
         )
+    elif rule_id == LIBUBOX_UNCHECKED_CALLOC_BUG_RULE:
+        rationale = (
+            "The exact frozen strcpy consumes a calloc_a auxiliary output immediately without "
+            "checking the primary result. Pinned libubox returns before assigning that output "
+            "on allocation failure, and a fingerprint-matched registered ubus callback reaches "
+            "the function with a request-controlled string."
+        )
     elif rule_id == LIBUBOX_FOREACH_INIT_RULE:
         rationale = (
             "The exact source invokes a pinned libubox foreach macro whose for initializer "
@@ -686,6 +733,12 @@ def _decision_for_certificate(
         rationale = (
             "Exact source reaches the selected output-object use only after stat/glob reports "
             "success; all failure paths return, break, or jump past the use."
+        )
+    elif rule_id == C_CHECKED_NETWORK_PARSE_RULE:
+        rationale = (
+            "The exact assignment consumes a local network-address object only inside the "
+            "inet_aton/inet_pton success branch, where the pinned API contract guarantees that "
+            "the complete output object was initialized."
         )
     elif rule_id == C_GUARDED_POINTER_RULE:
         rationale = (
@@ -701,6 +754,43 @@ def _decision_for_certificate(
         rationale = (
             "The exact terminator STORE uses a positive read count bounded by the N-1 request, "
             "so its one-byte write remains within the N-byte local array."
+        )
+    elif rule_id == C_TYPED_LINK_STORE_RULE:
+        rationale = (
+            "The exact pointer-width STORE updates a pointer-to-pointer cursor initialized to a "
+            "typed head field and advanced only to same-type next fields."
+        )
+    elif rule_id == C_BOUNDED_WRAPPER_READ_RULE:
+        rationale = (
+            "The pinned read wrapper returns no more than its capacity-minus-one request, and the "
+            "exact one-byte terminator STORE occurs only on its nonnegative result path."
+        )
+    elif rule_id == C_MASKED_RING_INDEX_RULE:
+        rationale = (
+            "The exact pointer STORE uses a static-zero index whose only update masks it into the "
+            "declared power-of-two array range."
+        )
+    elif rule_id == C_TRAILING_ESCAPE_RULE:
+        rationale = (
+            "The odd trailing-escape branch implies a positive string length, and both allocation "
+            "paths retain at least that complete string before the exact length-minus-one STORE."
+        )
+    elif rule_id == C_MACRO_TYPED_MEMBER_RULE:
+        rationale = (
+            "The exact STORE's source macro expands to a declared struct member; its fixed-width "
+            "scalar or constant in-range pointer-array element fully contains the write."
+        )
+    elif rule_id == C_BOUNDED_TYPED_BYTE_STORE_RULE:
+        rationale = (
+            "The exact one-byte STORE indexes a fixed array member through its typed pointer; "
+            "zero initialization and the only loop increment guard keep that byte index within "
+            "the declared member capacity."
+        )
+    elif rule_id == C_STRUCT_OUTPUT_INIT_RULE:
+        rationale = (
+            "A dominating exact call passes the containing stack object to a typed output "
+            "parameter whose first unconditional action zeroes the complete compiled struct; "
+            "the selected later CALL therefore cannot consume uninitialized bytes."
         )
     elif rule_id == C_GUARDED_FIXED_ARRAY_RULE:
         rationale = (
@@ -838,6 +928,23 @@ def _decision_for_certificate(
             "Exact source proves the first descriptor operation cannot reach the later one: "
             "they are separated into child and parent processes, or the first path calls a "
             "source-declared non-returning error routine."
+        )
+    elif rule_id == BUSYBOX_RTATTR_INIT_RULE:
+        rationale = (
+            "Exact source passes the complete max-plus-one pointer table to BusyBox "
+            "parse_rtattr, whose first statement zero-initializes every slot before the "
+            "selected guarded access."
+        )
+    elif rule_id == BUSYBOX_GETOPT32_OUTPUT_RULE:
+        rationale = (
+            "The selected source use is guarded by its exact getopt32 result bit; pinned "
+            "BusyBox writes that option output before returning the bit, and every "
+            "enumerated inherited mask is disjoint from it."
+        )
+    elif rule_id == C_FIXED_RECV_OUTPUT_RULE:
+        rationale = (
+            "The checked receive length covers the selected compiled struct member on every "
+            "path reaching the exact source use."
         )
     else:
         raise CertificateError(f"no decision rendering for rule {rule_id!r}")

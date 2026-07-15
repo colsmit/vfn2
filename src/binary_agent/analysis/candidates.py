@@ -66,7 +66,7 @@ RESOLVED_WRITE_ARTIFACT = "resolved_writes.json"
 FUNCTION_SUMMARY_ARTIFACT = "function_summaries.json"
 CONFIRMATION_CANDIDATE_ARTIFACT = "confirmation_findings.json"
 SUPPRESSED_FINDING_ARTIFACT = "suppressed_findings.json"
-ANALYSIS_CACHE_VERSION = "program_index_v11_literal_taint_output_signatures_partial_stack_terminal_cfg_operation_specs_v12"
+ANALYSIS_CACHE_VERSION = "program_index_v11_literal_taint_output_signatures_partial_stack_terminal_cfg_operation_specs_v16"
 STALE_STAGE_ARTIFACTS = (
     "scout_findings.json",
     "triage_findings.json",
@@ -348,6 +348,7 @@ class _WriteSummary:
     sink: str
     line_number: int
     line_text: str
+    operation_address: str = ""
     dest_arg_type: str = ""
     write_size_expr: str = ""
     write_size_bytes: Optional[int] = None
@@ -1293,7 +1294,11 @@ def _safe_summary_write_fact_for_callsite(
 ) -> Optional[WriteFact]:
     if summary.dest_arg_index >= len(site.args):
         return None
-    target = _resolve_stack_destination(site.args[summary.dest_arg_index], context.stack_index, site.aliases)
+    target = _resolve_pointee_destination(
+        site.args[summary.dest_arg_index],
+        context.stack_index,
+        site.aliases,
+    )
     if not target or not target.stack_obj:
         return None
     stack_obj = target.stack_obj
@@ -2230,6 +2235,8 @@ def _build_stack_alias_snapshots(
             snapshots.append(dict(aliases))
             continue
         target = _resolve_destination_expr(rhs, stack_index, aliases, param_names)
+        if target and _metadata_nonstack_object_used_as_pointee(rhs, target):
+            target = None
         if target and (target.stack_obj is not None or target.param_index is not None):
             source = "c_stack_probe_alias" if target.evidence_source.startswith("c_stack_probe") else "c_alias"
             iterated = target.iterated or _rhs_advances_alias(rhs, aliases) or _for_step_advances_alias(line, name)
@@ -2876,6 +2883,59 @@ def _resolve_stack_destination(
     if target and target.stack_obj is not None:
         return target
     return None
+
+
+def _metadata_nonstack_object_used_as_pointee(
+    expr: str,
+    target: _AliasTarget,
+) -> bool:
+    """Return whether a metadata global denotes a pointer value, not its slot.
+
+    Ghidra commonly emits an eight-byte global pointer as ``DAT_x`` and a
+    member access through it as ``*(type *)(DAT_x + offset)``.  The global
+    reference describes the pointer slot itself; it is not a capacity model
+    for the pointed-to object.  Treating a local alias of that value as an
+    alias of the slot has the same object-identity error.
+
+    Explicit address-of expressions and typed arrays still denote the
+    recovered object and remain eligible for bounds analysis.
+    """
+
+    obj = target.stack_obj
+    if obj is None:
+        return False
+    if str(obj.get("destination_kind") or "stack") not in {"global", "static_local", "tls"}:
+        return False
+    source = str(obj.get("capacity_source") or obj.get("capacity_basis_kind") or "").lower()
+    trust = str(obj.get("object_trust") or "").lower()
+    if source not in GHIDRA_METADATA_CAPACITY_SOURCES and trust != "metadata":
+        return False
+    if _looks_like_declared_array(obj):
+        return False
+
+    names = {
+        str(item)
+        for item in [obj.get("label"), obj.get("var_display"), *(obj.get("var_names") or [])]
+        if item
+    }
+    root = _root_identifier(_normalize_pointer_expr(expr))
+    if not root or root not in names:
+        return False
+    without_casts = _strip_c_casts(str(expr or ""))
+    if re.search(rf"&\s*\b{re.escape(root)}\b", without_casts):
+        return False
+    return True
+
+
+def _resolve_pointee_destination(
+    expr: str,
+    stack_index: _StackIndex,
+    aliases: Mapping[str, _AliasTarget],
+) -> Optional[_AliasTarget]:
+    target = _resolve_stack_destination(expr, stack_index, aliases)
+    if target and _metadata_nonstack_object_used_as_pointee(expr, target):
+        return None
+    return target
 
 
 def _resolve_param_destination(
@@ -6759,7 +6819,7 @@ def _extract_pointer_store_candidates(
     if rhs and _normalize_pointer_expr(_deref_target_expr(lhs)) == _normalize_pointer_expr(rhs_target):
         return candidates
     target_expr = _deref_target_expr(lhs)
-    target = _resolve_stack_destination(target_expr, stack_index, alias_map)
+    target = _resolve_pointee_destination(target_expr, stack_index, alias_map)
     if not target or not target.stack_obj:
         if use_memory_sets:
             heap_target = _resolve_heap_destination_expr(target_expr, heap_alias_map)
@@ -7060,6 +7120,26 @@ def _pointer_memory_set_candidate(
     )
 
 
+def _summary_store_operation_address(node: FunctionNode, line_number: int) -> str:
+    line_offset = int(node.record.c_line_number_offset or 0)
+    manifest_line_number = line_number - line_offset
+    pcode_store_addresses = {
+        str(entry.get("operation_address") or entry.get("address") or "")
+        for entry in node.record.pcode_stores or []
+    }
+    pcode_store_addresses.discard("")
+    line_store_addresses = {
+        str(item.get("operation_address") or "")
+        for row in node.record.c_line_addresses or []
+        if int(row.get("line_number") or 0) == manifest_line_number
+        for item in row.get("token_operations", [])
+        if isinstance(item, Mapping) and str(item.get("pcode") or "").upper() == "STORE"
+    }
+    line_store_addresses.discard("")
+    matches = line_store_addresses & pcode_store_addresses
+    return next(iter(matches)) if len(matches) == 1 else ""
+
+
 def _extract_write_summaries(
     node: FunctionNode,
     stack_index: _StackIndex,
@@ -7082,6 +7162,7 @@ def _extract_write_summaries(
             or (("->" in line or "." in line) and ("=" in line or "++" in line or "--" in line))
         ):
             continue
+        store_operation_address = _summary_store_operation_address(node, line_number)
         sink_items = _iter_sink_calls(line) if _line_may_contain_sink_call(line) else ()
         for sink, args in sink_items:
             spec = OPERATION_SPECS.get(sink)
@@ -7166,6 +7247,7 @@ def _extract_write_summaries(
                     sink="array_store",
                     line_number=line_number,
                     line_text=line.strip(),
+                    operation_address=store_operation_address,
                     dest_arg_type=_param_type_at(param_index, param_types),
                     write_size_expr=templated_index,
                     offset_bound_expr=bound[0] if bound else "",
@@ -7173,6 +7255,11 @@ def _extract_write_summaries(
                     offset_bound_evidence=bound[2] if bound else (),
                     semantics="indexed_write",
                     source_evidence=tuple(source_evidence),
+                    evidence_sources=(
+                        "c_text",
+                        "interprocedural_summary",
+                        *(() if not store_operation_address else ("pcode_stores",)),
+                    ),
                 )
             )
 
@@ -7199,10 +7286,16 @@ def _extract_write_summaries(
                         sink="field_array_store",
                         line_number=line_number,
                         line_text=line.strip(),
+                        operation_address=store_operation_address,
                         dest_arg_type=_param_type_at(param_index, param_types),
                         write_size_expr=templated_index,
                         semantics="indexed_write",
                         source_evidence=tuple(source_evidence),
+                        evidence_sources=(
+                            "c_text",
+                            "interprocedural_summary",
+                            *(() if not store_operation_address else ("pcode_stores",)),
+                        ),
                     )
                 )
 
@@ -7236,10 +7329,16 @@ def _extract_write_summaries(
                     sink="pointer_store",
                     line_number=line_number,
                     line_text=line.strip(),
+                    operation_address=store_operation_address,
                     dest_arg_type=_param_type_at(param_index, param_types),
                     write_size_expr=templated_offset or "0",
                     semantics="pointer_store",
                     source_evidence=tuple(source_evidence),
+                    evidence_sources=(
+                        "c_text",
+                        "interprocedural_summary",
+                        *(() if not store_operation_address else ("pcode_stores",)),
+                    ),
                 )
             )
     return summaries
@@ -7739,7 +7838,11 @@ def _instantiate_write_summaries(
             for summary in callee_summaries:
                 if summary.dest_arg_index >= len(site.args):
                     continue
-                target = _resolve_stack_destination(site.args[summary.dest_arg_index], context.stack_index, site.aliases)
+                target = _resolve_pointee_destination(
+                    site.args[summary.dest_arg_index],
+                    context.stack_index,
+                    site.aliases,
+                )
                 if not target or not target.stack_obj:
                     continue
                 candidate = _candidate_from_summary(
@@ -8207,6 +8310,7 @@ def _fixed_point_write_summaries(
                         sink=callee_summary.sink,
                         line_number=site.line_number,
                         line_text=site.original_line.strip() or site.line.strip(),
+                        operation_address=callee_summary.operation_address,
                         dest_arg_type=callee_summary.dest_arg_type,
                         write_size_expr=templated_expr,
                         write_size_bytes=callee_summary.write_size_bytes,
@@ -8237,6 +8341,7 @@ def _summary_identity(summary: _WriteSummary) -> tuple[object, ...]:
         summary.kind,
         summary.sink,
         summary.semantics,
+        summary.operation_address,
         _normalize_offset_expr(summary.write_size_expr),
         summary.write_size_bytes,
         _normalize_offset_expr(summary.offset_bound_expr),
@@ -9156,6 +9261,7 @@ def _candidate_from_summary(
             overflow_condition=condition,
             source_evidence=source_evidence,
             evidence_sources=evidence_sources,
+            operation_address=summary.operation_address,
             capacity_source=capacity_source,
             write_relation=write_relation,
             offset_expr=target.offset_expr or "0",
@@ -9267,6 +9373,7 @@ def _candidate_from_summary(
             overflow_condition=condition,
             source_evidence=source_evidence,
             evidence_sources=evidence_sources,
+            operation_address=summary.operation_address,
             capacity_source=capacity_source,
             write_relation=write_relation,
             offset_expr=offset_expr or summary_write_expr or "unknown",
@@ -9310,6 +9417,7 @@ def _candidate_from_summary(
             overflow_condition=condition,
             source_evidence=source_evidence,
             evidence_sources=_unique_nonempty([*evidence_sources, "literal_source_bound"]),
+            operation_address=summary.operation_address,
             capacity_source=capacity_source,
             write_relation=relation,
             offset_expr=target.offset_expr or "0",
@@ -9348,6 +9456,7 @@ def _candidate_from_summary(
         overflow_condition=condition,
         source_evidence=source_evidence,
         evidence_sources=evidence_sources,
+        operation_address=summary.operation_address,
         capacity_source=capacity_source,
         write_relation=write_relation,
         offset_expr=target.offset_expr or "0",
@@ -9401,6 +9510,7 @@ def _uninstantiated_parameter_summary_candidates(
             evidence_sources=tuple(
                 _unique_nonempty(list(summary.evidence_sources) + ["uninstantiated_parameter_summary"])
             ),
+            operation_address=summary.operation_address,
             destination_kind="parameter",
             capacity_source="parameter_contract",
             write_relation="missing_size_contract",
@@ -9443,6 +9553,7 @@ def _function_summaries_from_contexts(
                 "sink": summary.sink,
                 "line_number": summary.line_number,
                 "line_text": summary.line_text,
+                "operation_address": summary.operation_address,
                 "dest_arg_type": summary.dest_arg_type,
                 "write_size_expr": summary.write_size_expr,
                 "write_size_bytes": summary.write_size_bytes,
@@ -10513,7 +10624,11 @@ def _matching_summary_callsite(
                 continue
             if summary.dest_arg_index >= len(site.args):
                 continue
-            target = _resolve_stack_destination(site.args[summary.dest_arg_index], context.stack_index, site.aliases)
+            target = _resolve_pointee_destination(
+                site.args[summary.dest_arg_index],
+                context.stack_index,
+                site.aliases,
+            )
             if not target or not target.stack_obj:
                 continue
             target_name = str(target.stack_obj.get("var_display") or target.stack_obj.get("label") or "")
@@ -11685,9 +11800,38 @@ def _reconcile_candidate_duplicates(
     or the same decompiled source line when no operation address is available.
     """
 
+    exact_by_fallback_key: dict[tuple[str, ...], StaticCandidate] = {}
+    for candidate in candidates:
+        if not candidate.operation_address:
+            continue
+        key = _candidate_reconcile_fallback_key(candidate)
+        current = exact_by_fallback_key.get(key)
+        if current is None or _preferred_duplicate_candidate(current, candidate)[0] is candidate:
+            exact_by_fallback_key[key] = candidate
+
     best_by_key: dict[tuple[str, ...], StaticCandidate] = {}
     suppressed: list[SuppressedFinding] = []
     for candidate in candidates:
+        fallback_key = _candidate_reconcile_fallback_key(candidate)
+        exact = exact_by_fallback_key.get(fallback_key)
+        if not candidate.operation_address and exact is not None:
+            suppressed.append(
+                SuppressedFinding(
+                    fact_id=candidate.candidate_id,
+                    reason="duplicate_write_fact_missing_exact_operation",
+                    function_name=candidate.function_name,
+                    sink=candidate.sink,
+                    target_buffer=candidate.target_buffer,
+                    trace={
+                        "kept_candidate_id": exact.candidate_id,
+                        "dropped_candidate_id": candidate.candidate_id,
+                        "fallback_reconcile_key": list(fallback_key),
+                        "kept_sources": list(exact.evidence_sources),
+                        "dropped_sources": list(candidate.evidence_sources),
+                    },
+                )
+            )
+            continue
         key = _candidate_reconcile_key(candidate)
         existing = best_by_key.get(key)
         if existing is None:
@@ -11712,6 +11856,12 @@ def _reconcile_candidate_duplicates(
             )
         )
     return list(best_by_key.values()), suppressed
+
+
+def _candidate_reconcile_fallback_key(candidate: StaticCandidate) -> tuple[str, ...]:
+    key = _candidate_reconcile_key(candidate)
+    line_location = f"line:{candidate.line_number}:{' '.join(candidate.line_text.split())}"
+    return (*key[:3], line_location, *key[4:])
 
 
 def _candidate_reconcile_key(candidate: StaticCandidate) -> tuple[str, ...]:

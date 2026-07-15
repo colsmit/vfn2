@@ -81,6 +81,16 @@ def _cluster_key(state: CandidateState) -> tuple[str, ...]:
     sink = _normalized_sink(state)
     trace = state.type_facts.get("source_to_sink_trace")
     trace_token = _normalized_trace(trace) if isinstance(trace, Mapping) else ""
+    # Normalized token-to-p-code mappings identify distinct machine uses even
+    # when the decompiler renders them on one source line.  Collapsing those
+    # uses would discard an exact operation from the frozen inventory.
+    exact_token_use = ""
+    if str(state.operation.get("evidence_source") or "") == "pcode_token_use":
+        exact_token_use = str(
+            state.operation.get("address")
+            or state.sink.get("operation_address")
+            or ""
+        )
     return (
         target,
         state.vulnerability_type,
@@ -90,6 +100,7 @@ def _cluster_key(state: CandidateState) -> tuple[str, ...]:
         source,
         sink,
         trace_token,
+        exact_token_use,
     )
 
 

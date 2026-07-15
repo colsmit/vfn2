@@ -328,6 +328,105 @@ def test_resolve_interprocedural_store_in_exact_callee() -> None:
     assert binding["mapping_basis"] == "interprocedural_exact_store"
 
 
+def test_resolve_interprocedural_store_prefers_propagated_exact_address() -> None:
+    state = _state(vulnerability_type="out_of_bounds_write")
+    state["location"]["line_text"] = "FUN_002000(&global_object);"
+    state["sink"]["operation_address"] = "0x2020"
+    state["type_facts"] = {
+        "static_candidate": {
+            "kind": "interprocedural_pointer_store",
+            "offset_expr": "index + 4",
+            "write_size_bytes": 1,
+            "classification_trace": {},
+        }
+    }
+    manifest = _manifest(vulnerability_type="out_of_bounds_write")
+    manifest["functions"].append(
+        {
+            "name": "FUN_002000",
+            "address": "0x2000",
+            "pcode_stores": [
+                {
+                    "operation_address": address,
+                    "write_width": 1,
+                    "address_vars": ["param_1", "index"],
+                    "address_constants": [4],
+                    "pcode": "STORE",
+                }
+                for address in ("0x2010", "0x2020")
+            ],
+            "pcode_loads": [],
+            "pcode_calls": [],
+            "c_line_addresses": [],
+            "stack_regions": [],
+        }
+    )
+    manifest["functions"][0]["pcode_stores"] = []
+    manifest["functions"][0]["c_line_addresses"] = []
+
+    binding = resolve_exact_operation(state, manifest)
+
+    assert binding["status"] == "resolved"
+    assert binding["address"] == "0x2020"
+    assert binding["function_name"] == "FUN_002000"
+    assert binding["mapping_basis"] == "interprocedural_exact_store"
+
+
+def test_resolve_fixed_point_summary_store_in_nested_callee() -> None:
+    state = _state(vulnerability_type="out_of_bounds_write")
+    state["location"]["line_text"] = "FUN_002000(&global_object);"
+    state["sink"]["operation_address"] = "0x3020"
+    state["type_facts"] = {
+        "static_candidate": {
+            "kind": "interprocedural_pointer_store",
+            "operation_address": "0x3020",
+            "offset_expr": "index + 4",
+            "write_size_bytes": 1,
+            "classification_trace": {},
+        }
+    }
+    manifest = _manifest(vulnerability_type="out_of_bounds_write")
+    manifest["functions"][0]["pcode_stores"] = []
+    manifest["functions"][0]["c_line_addresses"] = []
+    manifest["functions"].extend(
+        [
+            {
+                "name": "FUN_002000",
+                "address": "0x2000",
+                "pcode_stores": [],
+                "pcode_loads": [],
+                "pcode_calls": [],
+                "c_line_addresses": [],
+                "stack_regions": [],
+            },
+            {
+                "name": "FUN_003000",
+                "address": "0x3000",
+                "pcode_stores": [
+                    {
+                        "operation_address": "0x3020",
+                        "write_width": 1,
+                        "address_vars": ["param_1", "index"],
+                        "address_constants": [4],
+                        "pcode": "STORE",
+                    }
+                ],
+                "pcode_loads": [],
+                "pcode_calls": [],
+                "c_line_addresses": [],
+                "stack_regions": [],
+            },
+        ]
+    )
+
+    binding = resolve_exact_operation(state, manifest)
+
+    assert binding["status"] == "resolved"
+    assert binding["address"] == "0x3020"
+    assert binding["function_name"] == "FUN_003000"
+    assert binding["mapping_basis"] == "interprocedural_exact_store"
+
+
 def test_resolve_ssa_use_from_decompiler_token_pcode() -> None:
     state = _state(vulnerability_type="uninitialized_memory_use")
     state["source"] = {"kind": "definedness", "expression": "local_20"}
@@ -358,6 +457,64 @@ def test_resolve_ssa_use_from_decompiler_token_pcode() -> None:
     assert binding["address"] == "0x1012"
     assert binding["pcode"] == "INT_SUB"
     assert binding["mapping_basis"] == "normalized_token_pcode_mapping"
+
+
+def test_exact_uninitialized_call_prefers_call_over_same_address_helper_pcode() -> None:
+    state = _state(vulnerability_type="uninitialized_memory_use")
+    state["operation"] = {
+        "kind": "call",
+        "name": "consume",
+        "address": "0x1010",
+    }
+    state["sink"] = dict(state["operation"])
+    manifest = _manifest(vulnerability_type="uninitialized_memory_use")
+    function = manifest["functions"][0]
+    function["pcode_calls"] = [
+        {
+            "call_address": "0x1010",
+            "callee": "consume",
+            "pcode": "CALL",
+            "args": [{"var_name": "local_20"}],
+        }
+    ]
+    function["pcode_operations"] = [
+        {
+            "operation_address": "0x1010",
+            "pcode": "PTRSUB",
+            "inputs": [{"constant": 0x4000}],
+        }
+    ]
+
+    binding = resolve_exact_operation(state, manifest)
+
+    assert binding["status"] == "resolved"
+    assert binding["address"] == "0x1010"
+    assert binding["pcode"] == "CALL"
+    assert binding["pcode_record"]["callee"] == "consume"
+    assert binding["mapping_basis"] == "candidate_exact_operation_address"
+
+
+def test_exact_token_use_selects_declared_pcode_at_shared_address() -> None:
+    state = _state(vulnerability_type="uninitialized_memory_use")
+    state["operation"] = {
+        "kind": "load",
+        "name": "local_read",
+        "address": "0x1010",
+        "pcode": "INT_RIGHT",
+    }
+    state["sink"] = dict(state["operation"])
+    manifest = _manifest(vulnerability_type="uninitialized_memory_use")
+    manifest["functions"][0]["pcode_operations"] = [
+        {"operation_address": "0x1010", "pcode": "INT_AND"},
+        {"operation_address": "0x1010", "pcode": "INT_RIGHT"},
+    ]
+
+    binding = resolve_exact_operation(state, manifest)
+
+    assert binding["status"] == "resolved"
+    assert binding["address"] == "0x1010"
+    assert binding["pcode"] == "INT_RIGHT"
+    assert binding["mapping_basis"] == "candidate_exact_operation_address"
 
 
 def test_spatial_token_mapping_selects_store_over_address_calculation() -> None:
