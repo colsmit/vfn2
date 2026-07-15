@@ -23,6 +23,7 @@ from binary_agent.adjudication_investigation import (
 from binary_agent.adjudication_certificates import (
     C_DECLARATION_INIT_RULE,
     C_CHECKED_API_OUTPUT_RULE,
+    C_CHECKED_NETWORK_PARSE_RULE,
     C_API_OUTPUT_ADDRESS_RULE,
     C_ARRAY_OBJECT_RULE,
     C_GUARDED_FIXED_ARRAY_RULE,
@@ -60,6 +61,9 @@ from binary_agent.adjudication_certificates import (
     C_TRUSTED_ALLOC_RULE,
     C_CLIENT_CONTEXT_RULE,
     LIBUBOX_BLOBMSG_VALUE_RULE,
+    BUSYBOX_RTATTR_INIT_RULE,
+    BUSYBOX_GETOPT32_OUTPUT_RULE,
+    C_FIXED_RECV_OUTPUT_RULE,
     C_GUARDED_POINTER_RULE,
     C_IMMEDIATE_ASSIGNMENT_RULE,
     C_INPLACE_RULE,
@@ -71,9 +75,12 @@ from binary_agent.adjudication_certificates import (
     GHIDRA_IMPORT_CAST_RULE,
     LIBUBOX_LIST_RULE,
     LIBUBOX_BLOBMSG_INIT_RULE,
+    LIBUBOX_NAMED_BLOBMSG_INIT_RULE,
     LIBUBOX_CALLOC_INIT_RULE,
     LIBUBOX_UNCHECKED_CALLOC_BUG_RULE,
     LIBUBOX_FOREACH_INIT_RULE,
+    C_FORMATTED_INPUT_OUTPUT_RULE,
+    C_STAT_CALL_EFFECT_RULE,
     REGISTERED_RULES,
     RULE_BASES,
     RULE_DECISIONS,
@@ -667,10 +674,28 @@ def _decision_for_certificate(
             "Exact caller source passes the complete local table to pinned libubox "
             "blobmsg_parse, whose first statement zero-initializes every slot before any return."
         )
+    elif rule_id == LIBUBOX_NAMED_BLOBMSG_INIT_RULE:
+        rationale = (
+            "Exact source passes the complete named local table to pinned libubox "
+            "blobmsg_parse, whose first statement zero-initializes every slot before "
+            "the selected table access."
+        )
     elif rule_id == C_API_OUTPUT_ADDRESS_RULE:
         rationale = (
             "Exact source and the pinned SDK signature show the call passes only the local "
             "object's address as a write-only stat-family output; the alleged value read is absent."
+        )
+    elif rule_id == C_FORMATTED_INPUT_OUTPUT_RULE:
+        rationale = (
+            "The candidate local appears only in Ghidra's same-address call-effect annotation; "
+            "the exact scanf-family runtime call receives source-level output addresses, not "
+            "the alleged uninitialized values."
+        )
+    elif rule_id == C_STAT_CALL_EFFECT_RULE:
+        rationale = (
+            "The candidate local appears only in Ghidra's same-address call-effect annotation; "
+            "every stat-family call on the exact source statement passes a local struct's address "
+            "rather than reading its previous contents."
         )
     elif rule_id == C_ASSIGNMENT_RULE:
         rationale = (
@@ -708,6 +733,12 @@ def _decision_for_certificate(
         rationale = (
             "Exact source reaches the selected output-object use only after stat/glob reports "
             "success; all failure paths return, break, or jump past the use."
+        )
+    elif rule_id == C_CHECKED_NETWORK_PARSE_RULE:
+        rationale = (
+            "The exact assignment consumes a local network-address object only inside the "
+            "inet_aton/inet_pton success branch, where the pinned API contract guarantees that "
+            "the complete output object was initialized."
         )
     elif rule_id == C_GUARDED_POINTER_RULE:
         rationale = (
@@ -897,6 +928,23 @@ def _decision_for_certificate(
             "Exact source proves the first descriptor operation cannot reach the later one: "
             "they are separated into child and parent processes, or the first path calls a "
             "source-declared non-returning error routine."
+        )
+    elif rule_id == BUSYBOX_RTATTR_INIT_RULE:
+        rationale = (
+            "Exact source passes the complete max-plus-one pointer table to BusyBox "
+            "parse_rtattr, whose first statement zero-initializes every slot before the "
+            "selected guarded access."
+        )
+    elif rule_id == BUSYBOX_GETOPT32_OUTPUT_RULE:
+        rationale = (
+            "The selected source use is guarded by its exact getopt32 result bit; pinned "
+            "BusyBox writes that option output before returning the bit, and every "
+            "enumerated inherited mask is disjoint from it."
+        )
+    elif rule_id == C_FIXED_RECV_OUTPUT_RULE:
+        rationale = (
+            "The checked receive length covers the selected compiled struct member on every "
+            "path reaching the exact source use."
         )
     else:
         raise CertificateError(f"no decision rendering for rule {rule_id!r}")

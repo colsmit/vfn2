@@ -1,4 +1,5 @@
 import json
+import shutil
 import subprocess
 import struct
 from pathlib import Path
@@ -23,6 +24,216 @@ from binary_agent import adjudication as adjudication_module
 
 
 IMAGE_BASE = 0x100000
+
+
+def test_source_function_prefix_resolves_compiler_clone_suffix() -> None:
+    lines = (
+        "static int system_add_vxlan(int value)\n"
+        "{\n"
+        "    value++;\n"
+        "    return value;\n"
+        "}\n"
+    ).splitlines()
+
+    prefix = checker_module._source_function_prefix(
+        lines, "system_add_vxlan.lto_priv.0", 3
+    )
+
+    assert "static int system_add_vxlan(int value)" in prefix
+    assert prefix.endswith("    value++;")
+
+
+@pytest.mark.parametrize(
+    ("declaration", "expected_proven"),
+    [
+        ("static char *matches[4];", 1),
+        ("char **matches;\n    // matches[4] = legacy;", 0),
+        ("", 0),
+    ],
+)
+def test_array_object_rule_ignores_commented_declarations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    declaration: str,
+    expected_proven: int,
+) -> None:
+    state = _state(
+        "candidate-array-object",
+        operation_offset=0x120,
+        successor_literal=False,
+        vulnerability_type="null_pointer_dereference",
+    )
+    root = _prepare(tmp_path, [state], _elf_with_calls())
+    source_root = root / "sources" / "demo"
+    source_root.mkdir(parents=True)
+    (source_root / "target.c").write_text(
+        "static void target(int i)\n"
+        "{\n"
+        f"    {declaration}\n"
+        "    use(matches[i]);\n"
+        "}\n"
+    )
+    _add_source_reference_mapping(root, source_root)
+    monkeypatch.setattr(checker_module, "_git_head", lambda _root: "a" * 40)
+    monkeypatch.setattr(
+        checker_module,
+        "_addr2line_frames",
+        lambda _reference, _address: [
+            {
+                "function": "target",
+                "path": "demo/target.c",
+                "line": 5 if "legacy" in declaration else 4,
+            }
+        ],
+    )
+
+    result = run_autoprove(root)
+
+    assert result.proven_candidates == expected_proven
+    assert result.residual_candidates == 1 - expected_proven
+
+
+def test_array_declaration_prefix_rejects_expression_keywords() -> None:
+    assert checker_module._c_declaration_prefix_is_type("char *const")
+    assert checker_module._c_declaration_prefix_is_type("struct message *")
+    assert not checker_module._c_declaration_prefix_is_type("")
+    assert not checker_module._c_declaration_prefix_is_type("return")
+
+
+def test_array_object_rule_does_not_treat_struct_field_as_standalone_array(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _state(
+        "candidate-member-array",
+        operation_offset=0x120,
+        successor_literal=False,
+        vulnerability_type="null_pointer_dereference",
+    )
+    root = _prepare(tmp_path, [state], _elf_with_calls())
+    source_root = root / "sources" / "demo"
+    source_root.mkdir(parents=True)
+    (source_root / "target.c").write_text(
+        "struct holder {\n"
+        "    char *items[4];\n"
+        "};\n"
+        "static void target(struct holder *holder, int i)\n"
+        "{\n"
+        "    use(holder->items[i]);\n"
+        "}\n"
+    )
+    _add_source_reference_mapping(root, source_root)
+    monkeypatch.setattr(checker_module, "_git_head", lambda _root: "a" * 40)
+    monkeypatch.setattr(
+        checker_module,
+        "_addr2line_frames",
+        lambda _reference, _address: [
+            {"function": "target", "path": "demo/target.c", "line": 6}
+        ],
+    )
+
+    result = run_autoprove(root)
+
+    assert result.proven_candidates == 0
+    assert result.residual_candidates == 1
+
+
+@pytest.mark.parametrize(
+    ("second_definition", "expected_proven"),
+    [
+        ("static char *matches[8] ALIGN_PTR = { 0 };", 1),
+        ("static char **matches;", 0),
+    ],
+)
+def test_array_object_rule_checks_every_preprocessor_alternative(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    second_definition: str,
+    expected_proven: int,
+) -> None:
+    state = _state(
+        "candidate-array-alternatives",
+        operation_offset=0x120,
+        successor_literal=False,
+        vulnerability_type="null_pointer_dereference",
+    )
+    root = _prepare(tmp_path, [state], _elf_with_calls())
+    source_root = root / "sources" / "demo"
+    source_root.mkdir(parents=True)
+    (source_root / "target.c").write_text(
+        "#if FIRST_LAYOUT\n"
+        "static char *matches[4] ALIGN_PTR = { 0 };\n"
+        "#else\n"
+        f"{second_definition}\n"
+        "#endif\n"
+        "static void target(int i)\n"
+        "{\n"
+        "    use(matches[i]);\n"
+        "}\n"
+    )
+    _add_source_reference_mapping(root, source_root)
+    monkeypatch.setattr(checker_module, "_git_head", lambda _root: "a" * 40)
+    monkeypatch.setattr(
+        checker_module,
+        "_addr2line_frames",
+        lambda _reference, _address: [
+            {"function": "target", "path": "demo/target.c", "line": 8}
+        ],
+    )
+
+    result = run_autoprove(root)
+
+    assert result.proven_candidates == expected_proven
+    assert result.residual_candidates == 1 - expected_proven
+
+
+def test_reference_struct_layout_resolves_anonymous_typedef(
+    tmp_path: Path,
+) -> None:
+    compiler = shutil.which("gcc") or shutil.which("cc")
+    if compiler is None:
+        pytest.skip("a C compiler is required for the DWARF layout regression")
+    source = tmp_path / "layout.c"
+    source.write_text(
+        "typedef struct { unsigned char first; unsigned int second; } msg_t;\n"
+        "volatile msg_t packet;\n"
+        "int main(void) { return packet.first; }\n"
+    )
+    reference = tmp_path / "reference"
+    subprocess.run(
+        [compiler, "-O0", "-g", "-o", str(reference), str(source)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    context = CampaignContext(
+        root=tmp_path,
+        manifest={},
+        candidate={},
+        state={},
+        binding={},
+        input_row={},
+        binary_path=reference,
+        export_manifest={},
+    )
+
+    layout = checker_module._reference_struct_layout(
+        context,
+        {
+            "reference_binary": {
+                "path": reference.name,
+                "sha256": sha256_file(reference),
+            }
+        },
+        "msg_t",
+    )
+
+    assert layout["type_binding"] == "typedef_to_structure"
+    assert layout["size_bytes"] == 8
+    assert layout["members"] == [
+        {"name": "first", "offset_bytes": 0, "size_bytes": 1},
+        {"name": "second", "offset_bytes": 4, "size_bytes": 4},
+    ]
 
 
 def test_normalized_function_fingerprint_masks_addresses_but_keeps_constants(
@@ -1374,6 +1585,726 @@ def test_blobmsg_table_alias_accepts_immediate_unbraced_guard() -> None:
     assert result is not None
     assert result["kind"] == "unbraced_table_alias_assignment"
     assert result["table_index"] == "ATTR_NAME"
+
+
+def test_named_blobmsg_table_initialization_is_admitted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _prepare_blobmsg_table_campaign(
+        tmp_path,
+        monkeypatch,
+        candidate_id="candidate-named-table",
+        source_text=(
+            "static void target(void)\n"
+            "{\n"
+            "    struct blob_attr *tb_data[MAX_ATTR], *cur;\n"
+            "    blobmsg_parse(policy, MAX_ATTR, tb_data, data, len);\n"
+            "    if ((cur = tb_data[ATTR_NAME]) != NULL) {\n"
+            "        use(cur);\n"
+            "    }\n"
+            "}\n"
+        ),
+        source_line=5,
+    )
+
+    result = run_autoprove(root, admit=True)
+
+    assert result.proven_candidates == 1
+    assert json.loads(result.summary_path.read_text())["counts_by_rule"] == {
+        "libubox_named_blobmsg_parse_initializes_table_v1": 1
+    }
+
+
+def test_named_blobmsg_table_rejects_short_parse_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _prepare_blobmsg_table_campaign(
+        tmp_path,
+        monkeypatch,
+        candidate_id="candidate-unsafe-named-table",
+        source_text=(
+            "static void target(void)\n"
+            "{\n"
+            "    struct blob_attr *tb_data[MAX_ATTR], *cur;\n"
+            "    blobmsg_parse(policy, MAX_ATTR - 1, tb_data, data, len);\n"
+            "    if ((cur = tb_data[ATTR_NAME]) != NULL) {\n"
+            "        use(cur);\n"
+            "    }\n"
+            "}\n"
+        ),
+        source_line=5,
+    )
+
+    result = run_autoprove(root)
+
+    assert result.proven_candidates == 0
+    assert result.residual_candidates == 1
+
+
+def test_formatted_input_output_address_is_not_a_value_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _prepare_formatted_input_campaign(
+        tmp_path,
+        monkeypatch,
+        output_argument="&value",
+        runtime_local=False,
+    )
+
+    result = run_autoprove(root, admit=True)
+
+    assert result.proven_candidates == 1
+    assert json.loads(result.summary_path.read_text())["counts_by_rule"] == {
+        "c_formatted_input_output_not_read_v1": 1
+    }
+
+
+@pytest.mark.parametrize(
+    ("output_argument", "runtime_local"),
+    [("value", False), ("&value", True)],
+)
+def test_formatted_input_output_proof_rejects_runtime_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    output_argument: str,
+    runtime_local: bool,
+) -> None:
+    root = _prepare_formatted_input_campaign(
+        tmp_path,
+        monkeypatch,
+        output_argument=output_argument,
+        runtime_local=runtime_local,
+    )
+
+    result = run_autoprove(root)
+
+    assert result.proven_candidates == 0
+    assert result.residual_candidates == 1
+
+
+def test_stat_output_call_effect_is_not_a_value_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _prepare_stat_call_effect_campaign(
+        tmp_path,
+        monkeypatch,
+        output_expression="&first",
+        runtime_local=False,
+    )
+
+    result = run_autoprove(root, admit=True)
+
+    assert result.proven_candidates == 1
+    assert json.loads(result.summary_path.read_text())["counts_by_rule"] == {
+        "c_stat_output_call_effect_not_read_v1": 1
+    }
+
+
+@pytest.mark.parametrize(
+    ("output_expression", "runtime_local"),
+    [("first", False), ("&first", True)],
+)
+def test_stat_output_call_effect_rejects_runtime_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    output_expression: str,
+    runtime_local: bool,
+) -> None:
+    root = _prepare_stat_call_effect_campaign(
+        tmp_path,
+        monkeypatch,
+        output_expression=output_expression,
+        runtime_local=runtime_local,
+    )
+
+    result = run_autoprove(root)
+
+    assert result.proven_candidates == 0
+    assert result.residual_candidates == 1
+
+
+def _prepare_stat_call_effect_campaign(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    output_expression: str,
+    runtime_local: bool,
+) -> Path:
+    root = _prepare_formatted_input_campaign(
+        tmp_path,
+        monkeypatch,
+        output_argument="&value",
+        runtime_local=runtime_local,
+    )
+    (root / "sources" / "demo" / "target.c").write_text(
+        "static void target(const char *path)\n"
+        "{\n"
+        "    struct stat first, second;\n"
+        "    prepare();\n"
+        f"    if (stat(path, {output_expression}) || stat(path, &second))\n"
+        "        return;\n"
+        "}\n"
+    )
+    return root
+
+
+def _prepare_formatted_input_campaign(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    output_argument: str,
+    runtime_local: bool,
+) -> Path:
+    state = _state(
+        "candidate-formatted-input",
+        operation_offset=0x120,
+        successor_literal=False,
+        vulnerability_type="uninitialized_memory_use",
+    )
+    operation_address = hex(IMAGE_BASE + 0x120)
+    state["sink"] = {
+        "address": operation_address,
+        "operation_address": operation_address,
+        "kind": "call",
+        "name": "fscanf",
+        "semantics": "format_input",
+        "evidence_source": "pcode_call",
+    }
+    state["operation"] = dict(state["sink"])
+    manifest = _manifest([state])
+    function = manifest["functions"][0]
+    function["pcode_loads"] = []
+    target = {
+        "address": "0x9000",
+        "address_space": "unique",
+        "size_bytes": 8,
+        "var_name": "UNNAMED",
+    }
+    local = {
+        "address": "0x-20",
+        "address_space": "stack",
+        "size_bytes": 4,
+        "stack_offset": -32,
+        "var_name": "local_20",
+    }
+    pointer = {
+        "address": "0x9100",
+        "address_space": "unique",
+        "size_bytes": 8,
+        "var_name": "UNNAMED",
+    }
+    call_args = [
+        {
+            "address": "0x0",
+            "address_space": "register",
+            "size_bytes": 8,
+            "var_name": "fp",
+        },
+        {
+            "address": "0x9200",
+            "address_space": "unique",
+            "size_bytes": 8,
+            "var_name": "UNNAMED",
+        },
+        local if runtime_local else pointer,
+    ]
+    function["pcode_calls"] = [
+        {
+            "call_address": operation_address,
+            "pcode": "CALLIND",
+            "callee": "",
+            "callee_address": "0x9000",
+            "target_kind": "indirect",
+            "arg_count": len(call_args),
+            "args": call_args,
+        }
+    ]
+    function["pcode_operations"] = [
+        {
+            "operation_address": operation_address,
+            "pcode": "CALLIND",
+            "inputs": [target, *call_args],
+            "output": {},
+        },
+        {
+            "operation_address": operation_address,
+            "pcode": "INDIRECT",
+            "inputs": [
+                local,
+                {
+                    "address": "0x1",
+                    "address_space": "const",
+                    "constant": 1,
+                    "size_bytes": 4,
+                },
+            ],
+            "output": local,
+        },
+    ]
+    root = _prepare(
+        tmp_path,
+        [state],
+        _elf_with_calls(0x120),
+        manifest_payload=manifest,
+    )
+    source_root = root / "sources" / "demo"
+    source_root.mkdir(parents=True)
+    (source_root / "target.c").write_text(
+        "static void target(FILE *fp)\n"
+        "{\n"
+        "    int value;\n"
+        "    int result;\n"
+        f"    result = fscanf(fp, \"%d\", {output_argument});\n"
+        "    use(result);\n"
+        "}\n"
+    )
+    _add_source_reference_mapping(root, source_root)
+    monkeypatch.setattr(checker_module, "_git_head", lambda _root: "a" * 40)
+    monkeypatch.setattr(adjudication_module, "_git_head", lambda _root: "a" * 40)
+    monkeypatch.setattr(
+        checker_module,
+        "_addr2line_frames",
+        lambda _reference, _address: [
+            {"function": "target", "path": "demo/target.c", "line": 5}
+        ],
+    )
+    monkeypatch.setattr(
+        checker_module,
+        "_sdk_api_contract",
+        lambda *_args, **_kwargs: {
+            "api": "fscanf",
+            "declaration": "int fscanf(FILE *, const char *, ...);",
+            "success_contract": "conversions store through output pointers",
+        },
+    )
+    return root
+
+
+def test_busybox_rtattr_table_initialization_is_admitted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _prepare_busybox_source_campaign(
+        tmp_path,
+        monkeypatch,
+        candidate_id="candidate-rtattr",
+        source_text=(
+            "static void target(void)\n"
+            "{\n"
+            "    struct rtattr *tb[MAX + 1];\n"
+            "    parse_rtattr(tb, MAX, rta, len);\n"
+            "    if (tb[NAME]) {\n"
+            "        use(RTA_DATA(tb[NAME]));\n"
+            "    }\n"
+            "}\n"
+        ),
+        source_line=6,
+        dependency_name="_busybox_parse_rtattr_contract",
+        dependency={
+            "source_commit": "a" * 40,
+            "implementation": {
+                "path": "sources/demo/networking/libiproute/libnetlink.c",
+                "sha256": "b" * 64,
+                "kind": "source_review",
+            },
+            "function": "parse_rtattr",
+            "initialization_statement": (
+                "memset(tb, 0, (max + 1) * sizeof(tb[0]));"
+            ),
+            "bounded_store_statement": (
+                "if (rta->rta_type <= max) { tb[rta->rta_type] = rta;"
+            ),
+            "path_coverage": "zeroing precedes the parser loop",
+        },
+    )
+
+    result = run_autoprove(root, admit=True)
+
+    assert result.proven_candidates == 1
+    assert json.loads(result.summary_path.read_text())["counts_by_rule"] == {
+        "busybox_parse_rtattr_initializes_table_v1": 1
+    }
+    assert check_all_certificates(root)["checked_certificate_count"] == 1
+
+
+@pytest.mark.parametrize(
+    ("source_text", "source_line"),
+    [
+        ((
+            "static void target(void)\n"
+            "{\n"
+            "    struct rtattr *tb[MAX];\n"
+            "    parse_rtattr(tb, MAX, rta, len);\n"
+            "    if (tb[NAME]) {\n"
+            "        use(RTA_DATA(tb[NAME]));\n"
+            "    }\n"
+            "}\n"
+        ), 6),
+        ((
+            "static void target(void)\n"
+            "{\n"
+            "    struct rtattr *tb[MAX + 1];\n"
+            "    parse_rtattr(tb, MAX, rta, len);\n"
+            "    use(RTA_DATA(tb[NAME]));\n"
+            "}\n"
+        ), 5),
+        ((
+            "static void target(void)\n"
+            "{\n"
+            "    struct rtattr *tb[MAX + 1];\n"
+            "    parse_rtattr(tb, MAX, rta, len);\n"
+            "    if (enabled) use(RTA_DATA(tb[NAME]));\n"
+            "}\n"
+        ), 5),
+    ],
+)
+def test_busybox_rtattr_proof_rejects_unsafe_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source_text: str,
+    source_line: int,
+) -> None:
+    root = _prepare_busybox_source_campaign(
+        tmp_path,
+        monkeypatch,
+        candidate_id="candidate-unsafe-rtattr",
+        source_text=source_text,
+        source_line=source_line,
+        dependency_name="_busybox_parse_rtattr_contract",
+        dependency={},
+    )
+
+    result = run_autoprove(root)
+
+    assert result.proven_candidates == 0
+    assert result.residual_candidates == 1
+
+
+def test_busybox_getopt32_guarded_output_is_admitted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _prepare_busybox_source_campaign(
+        tmp_path,
+        monkeypatch,
+        candidate_id="candidate-getopt32",
+        source_text=_getopt32_source("0", '"m:"'),
+        source_line=9,
+        dependency_name="_busybox_getopt32_contract",
+        dependency={
+            "source_commit": "a" * 40,
+            "implementation": {
+                "path": "sources/demo/libbb/getopt32.c",
+                "sha256": "b" * 64,
+                "kind": "source_review",
+            },
+            "noreturn_header": {
+                "path": "sources/demo/include/libbb.h",
+                "sha256": "c" * 64,
+                "kind": "source_review",
+            },
+            "function": "vgetopt32",
+            "option_bit_statement": "on_off->switch_on = (1U << c);",
+            "argument_store_statement": "*(char **)(on_off->optarg) = optarg;",
+            "success_contract": "the output store precedes return",
+            "source_error_path": "bb_show_usage();",
+        },
+    )
+
+    result = run_autoprove(root, admit=True)
+
+    assert result.proven_candidates == 1
+    assert json.loads(result.summary_path.read_text())["counts_by_rule"] == {
+        "busybox_getopt32_guarded_output_v1": 1
+    }
+    certificate = json.loads(
+        next((root / "autoprove" / "runs").glob("*/certificates/*.json")).read_text()
+    )
+    assert certificate["proof"]["initialization"]["inherited_mask_proof"][
+        "incoming_values"
+    ] == [0]
+
+
+@pytest.mark.parametrize(
+    ("caller_mask", "option_spec"),
+    [("OPT_m", '"m:"'), ("0", '"m:\\0m"')],
+)
+def test_busybox_getopt32_proof_rejects_unsafe_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caller_mask: str,
+    option_spec: str,
+) -> None:
+    root = _prepare_busybox_source_campaign(
+        tmp_path,
+        monkeypatch,
+        candidate_id="candidate-unsafe-getopt32",
+        source_text=_getopt32_source(caller_mask, option_spec),
+        source_line=10,
+        dependency_name="_busybox_getopt32_contract",
+        dependency={},
+    )
+
+    result = run_autoprove(root)
+
+    assert result.proven_candidates == 0
+    assert result.residual_candidates == 1
+
+
+def test_fixed_recv_struct_member_initialization_is_admitted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dependency = {
+        "sdk_archive": {
+            "path": "sdk/fake-sdk.tar.zst",
+            "sha256": "a" * 64,
+            "kind": "source_review",
+        },
+        "api_header": {
+            "path": "sdk/socket.h",
+            "sha256": "b" * 64,
+            "kind": "source_review",
+        },
+        "api": "recv",
+        "declaration": "ssize_t recv(int, void *, size_t, int);",
+        "success_contract": "the return value is the initialized byte count",
+        "sdk_sha256": "c" * 64,
+    }
+    root = _prepare_busybox_source_campaign(
+        tmp_path,
+        monkeypatch,
+        candidate_id="candidate-recv",
+        source_text=_fixed_recv_source("8", terminates=True),
+        source_line=10,
+        dependency_name="_sdk_api_contract",
+        dependency=dependency,
+    )
+    monkeypatch.setattr(
+        checker_module,
+        "_reference_struct_layout",
+        lambda _context, _mapping, _name: {
+            "name": "msg_t",
+            "type_binding": "typedef_to_structure",
+            "size_bytes": 8,
+            "members": [
+                {"name": "first", "offset_bytes": 0, "size_bytes": 4},
+                {"name": "second", "offset_bytes": 4, "size_bytes": 4},
+            ],
+            "reference_binary_path": "reference-builds/demo/symbol-rich/demo",
+            "reference_binary_sha256": "d" * 64,
+        },
+    )
+
+    result = run_autoprove(root, admit=True)
+
+    assert result.proven_candidates == 1
+    assert json.loads(result.summary_path.read_text())["counts_by_rule"] == {
+        "c_fixed_size_recv_initialization_v1": 1
+    }
+    certificate = json.loads(
+        next((root / "autoprove" / "runs").glob("*/certificates/*.json")).read_text()
+    )
+    assert certificate["proof"]["initialization"]["selected_member_end_bytes"] == 8
+    assert certificate["proof"]["initialization"]["minimum_accepted_size_bytes"] == 8
+
+
+@pytest.mark.parametrize(
+    ("accepted_size", "terminates"),
+    [("4", True), ("8", False)],
+)
+def test_fixed_recv_proof_rejects_short_or_fallthrough_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_size: str,
+    terminates: bool,
+) -> None:
+    root = _prepare_busybox_source_campaign(
+        tmp_path,
+        monkeypatch,
+        candidate_id="candidate-unsafe-recv",
+        source_text=_fixed_recv_source(accepted_size, terminates=terminates),
+        source_line=10,
+        dependency_name="_sdk_api_contract",
+        dependency={},
+    )
+    monkeypatch.setattr(
+        checker_module,
+        "_reference_struct_layout",
+        lambda _context, _mapping, _name: {
+            "name": "msg_t",
+            "size_bytes": 8,
+            "members": [
+                {"name": "first", "offset_bytes": 0, "size_bytes": 4},
+                {"name": "second", "offset_bytes": 4, "size_bytes": 4},
+            ],
+        },
+    )
+
+    result = run_autoprove(root)
+
+    assert result.proven_candidates == 0
+    assert result.residual_candidates == 1
+
+
+def test_checked_network_parse_output_is_admitted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dependency = {
+        "sdk_archive": {
+            "path": "sdk/fake-sdk.tar.zst",
+            "sha256": "a" * 64,
+            "kind": "source_review",
+        },
+        "api_header": {
+            "path": "sdk/inet.h",
+            "sha256": "b" * 64,
+            "kind": "source_review",
+        },
+        "api": "inet_aton",
+        "declaration": "int inet_aton(const char *, struct in_addr *);",
+        "success_contract": "a nonzero return initializes the output",
+        "sdk_sha256": "c" * 64,
+    }
+    root = _prepare_busybox_source_campaign(
+        tmp_path,
+        monkeypatch,
+        candidate_id="candidate-network-output",
+        source_text=_network_parse_source("!= 0"),
+        source_line=5,
+        dependency_name="_sdk_api_contract",
+        dependency=dependency,
+    )
+
+    result = run_autoprove(root, admit=True)
+
+    assert result.proven_candidates == 1
+    assert json.loads(result.summary_path.read_text())["counts_by_rule"] == {
+        "c_checked_network_parse_output_v1": 1
+    }
+
+
+def test_checked_network_parse_output_rejects_failure_branch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _prepare_busybox_source_campaign(
+        tmp_path,
+        monkeypatch,
+        candidate_id="candidate-unsafe-network-output",
+        source_text=_network_parse_source("== 0"),
+        source_line=5,
+        dependency_name="_sdk_api_contract",
+        dependency={},
+    )
+
+    result = run_autoprove(root)
+
+    assert result.proven_candidates == 0
+    assert result.residual_candidates == 1
+
+
+def _network_parse_source(comparison: str) -> str:
+    return (
+        "static void target(const char *host)\n"
+        "{\n"
+        "    struct in_addr parsed;\n"
+        f"    if (inet_aton(host, &parsed) {comparison}) {{\n"
+        "        destination = parsed;\n"
+        "    }\n"
+        "}\n"
+    )
+
+
+def _fixed_recv_source(accepted_size: str, *, terminates: bool) -> str:
+    failure = "return;" if terminates else "warn();"
+    return (
+        "typedef struct { unsigned first; unsigned second; } msg_t;\n"
+        "static void target(int fd)\n"
+        "{\n"
+        "    msg_t msg;\n"
+        "    int size;\n"
+        "    size = recv(fd, &msg, sizeof(msg), 0);\n"
+        f"    if (size != {accepted_size}) {{\n"
+        f"        {failure}\n"
+        "    }\n"
+        "    use(msg.second);\n"
+        "}\n"
+    )
+
+
+def _getopt32_source(caller_mask: str, option_spec: str) -> str:
+    return (
+        "enum { OPT_m = (1 << 0) };\n"
+        "static void target(unsigned op, char **argv)\n"
+        "{\n"
+        "    char *value;\n"
+        f"    op |= getopt32(argv, {option_spec}, &value);\n"
+        "    unrelated();\n"
+        "    if (op & OPT_m) {\n"
+        "        consume_guard();\n"
+        "        use(value);\n"
+        "    }\n"
+        "}\n"
+        "static void caller(char **argv)\n"
+        "{\n"
+        f"    target({caller_mask}, argv);\n"
+        "}\n"
+    )
+
+
+def _prepare_busybox_source_campaign(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    candidate_id: str,
+    source_text: str,
+    source_line: int,
+    dependency_name: str,
+    dependency: dict,
+) -> Path:
+    state = _state(
+        candidate_id,
+        operation_offset=0x120,
+        successor_literal=False,
+        vulnerability_type="uninitialized_memory_use",
+    )
+    root = _prepare(tmp_path, [state], _elf_with_calls())
+    source_root = root / "sources" / "demo"
+    source_root.mkdir(parents=True)
+    source_path = source_root / "target.c"
+    source_path.write_text(source_text)
+    _add_source_reference_mapping(root, source_root)
+    for reference_name in (
+        "implementation",
+        "noreturn_header",
+        "sdk_archive",
+        "api_header",
+    ):
+        reference = dependency.get(reference_name)
+        if not isinstance(reference, dict) or not reference.get("path"):
+            continue
+        dependency_path = root / str(reference["path"])
+        if not dependency_path.exists():
+            dependency_path.parent.mkdir(parents=True, exist_ok=True)
+            dependency_path.write_text(f"pinned {reference_name}\n")
+        reference["sha256"] = sha256_file(dependency_path)
+    monkeypatch.setattr(checker_module, "_git_head", lambda _root: "a" * 40)
+    monkeypatch.setattr(adjudication_module, "_git_head", lambda _root: "a" * 40)
+    monkeypatch.setattr(
+        checker_module,
+        "_addr2line_frames",
+        lambda _reference, _address: [
+            {"function": "target", "path": "demo/target.c", "line": source_line}
+        ],
+    )
+    monkeypatch.setattr(checker_module, dependency_name, lambda *_args, **_kwargs: dependency)
+    return root
 
 
 def _prepare_blobmsg_table_campaign(

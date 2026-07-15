@@ -1,4 +1,4 @@
-# Scale autonomous adjudication across additional OpenWrt binaries
+# Resolve the complete 668-row OpenWrt residual partition
 
 This ExecPlan is a living document maintained in accordance with `PLANS.md`. The sections `Progress`, `Surprises & Discoveries`, `Decision Log`, and `Outcomes & Retrospective` must remain current while implementation proceeds.
 
@@ -6,9 +6,9 @@ This ExecPlan is a living document maintained in accordance with `PLANS.md`. The
 
 The project has already finalized a strict, verifier-gated ledger for 218 candidates from four OpenWrt binaries. The next useful test is not another hand-picked example; it is a larger, label-blind batch that exercises different programs and forces the automation to reveal its scaling limits and unsupported semantics.
 
-After this milestone, a user can run the current pipeline over three additional shipped OpenWrt 24.10.4 x86/64 programs—`rpcd`, `netifd`, and `busybox`—without manually editing candidate decisions. The campaign must freeze exact shipped binaries and exports, use exact source or binary evidence for every admitted decision, group duplicate symptoms by root cause, and leave unsupported work explicitly residual. When the run exposes a general analyzer or orchestration defect, this milestone fixes the general mechanism with regression coverage and reruns the batch. It never adds candidate-ID suppression lists or treats failed proof as safety.
+After this milestone, a user can run the current pipeline over three additional shipped OpenWrt 24.10.4 x86/64 programs—`rpcd`, `netifd`, and `busybox`—and receive one final `bug` or `not_bug` decision for every frozen candidate without manually editing candidate decisions. The campaign must freeze exact shipped binaries and exports, use exact source or binary evidence for every admitted decision, group duplicate symptoms by root cause, and keep unsupported work explicitly residual until affirmative evidence exists. When the run exposes a general analyzer or orchestration defect, this milestone fixes the general mechanism with regression coverage and reruns the batch. It never adds candidate-ID suppression lists or treats failed proof as safety.
 
-The observable outcome is a campaign below `.ai/runs/openwrt-more-binaries-v1` whose summary reports the deterministic first-pass coverage, remaining review units, verified target bugs if any, and general automation improvements. The repository test suite and an end-to-end rerun must demonstrate that the improvements preserve the earlier strict-hybrid guarantees.
+The observable outcome is a campaign below `.ai/runs/openwrt-more-binaries-v1` whose independently checked summary has zero residual candidates and whose final ledger reconciles all 976 frozen candidate IDs. The ledger may publish schema-v2 vulnerability reports only for bugs that separately satisfy the existing dynamic report gate. The repository test suite and two byte-identical end-to-end reruns must demonstrate that the improvements preserve the earlier strict-hybrid guarantees.
 
 ## Progress
 
@@ -42,6 +42,15 @@ The observable outcome is a campaign below `.ai/runs/openwrt-more-binaries-v1` w
 - [x] (2026-07-14 22:19Z) Froze authoritative current-tool-hash campaign `.ai/runs/openwrt-more-binaries-v1/exact-machine-campaign-v7`. Two admitted runs are byte-identical across summary, residual, certificate, and review artifacts; a fresh independent check reproduces 308 certificates, 668 residuals, and 91 admitted units.
 - [x] (2026-07-14 22:19Z) Repeated repository-wide validation after the compatibility correction: 1,017 tests passed and five skipped; `compileall` succeeded under both Python 3.10.20 and the project Python 3.12.3; `pip check` reported no broken requirements.
 - [x] (2026-07-14 22:23Z) Published implementation commit `8ff416b` to draft PR #1. Both push and pull-request Python 3.10 workflows passed. The independent publication audit matched local, remote, and PR head SHAs; verified unchanged frozen inputs plus current v7 tool hashes; reconciled all 13/11/11 selected rows, the 308/668 partition, and the single exact CALLIND bug; and confirmed that no final ledger or schema-v2 vulnerability report was emitted.
+- [x] (2026-07-14 23:09Z) Began the complete residual campaign from authoritative v7. The frozen residual partition has 668 unique IDs: 479 BusyBox, 152 netifd, and 37 rpcd. By class it contains 279 uninitialized uses, 144 null dereferences, 130 stack overflows, 62 path effects, and 53 rows across leaks, format strings, argument effects, spatial writes, file effects, command effects, and logging.
+- [x] (2026-07-14 23:09Z) Source-bound the four largest BusyBox uninitialized clusters. `FUN_00414f83` is a `parse_rtattr` table-initialization unit, `FUN_00412b3e` is a `getopt32` option-output unit, and `FUN_00410f12` is a fixed-size `recv` output unit. `FUN_0040a71c` combines checked ioctl outputs with two write-only `fscanf` output-address artifacts and will be handled by separate reusable contracts.
+- [x] (2026-07-15 00:45Z) Implemented and independently checked general BusyBox `parse_rtattr`, `getopt32`, and fixed-size `recv` contracts with unsafe counterexamples. Immutable campaign v10 reproduced 338 certified candidates and 638 residuals, resolving 30 rows over v7.
+- [x] (2026-07-15 00:45Z) Added named libubox table initialization, formatted-input output-address, stat-family call-effect, checked network-parse, and compiler-clone source binding. Hardened C comment removal, declaration parsing, preprocessor alternatives, and compiled anonymous-typedef DWARF layout with focused regressions.
+- [x] (2026-07-15 00:45Z) Audited every changed array-object proof and revoked 12 earlier weak certificates that had treated a commented declaration, an indexed expression, a pointer, or an aggregate member as a standalone array. Member arrays now require a separate base-object proof; no withdrawn row was classified safe by absence of evidence.
+- [x] (2026-07-15 00:45Z) Froze authoritative campaign `.ai/runs/openwrt-more-binaries-v1/exact-machine-campaign-v11`. Two admitted runs are byte-identical, and a fresh independent check reproduces 397 certificates, 579 residuals, and 123 admitted units over all 976 candidates.
+- [x] (2026-07-15 00:45Z) Completed repository-wide validation for the v11 iteration: 1,046 tests passed and five skipped; `compileall` succeeded; `pip check` reported no broken requirements; generated bytecode caches were removed afterward.
+- [ ] Continue root-cause fan-out across every remaining class until the independently checked residual count is zero.
+- [ ] Finalize the 976-row ledger, run the full acceptance suite twice, and publish the completed campaign.
 - [x] (2026-07-14 20:15Z) Completed repository-wide validation: 1,007 tests passed and five skipped; `compileall` succeeded; `pip check` reported no broken requirements. The independent campaign check reproduced all 259 certificates and 717 residuals.
 - [x] (2026-07-14 18:56Z) Committed and published the earlier 1,171-record milestone to `origin/main` as `b4b2637`. No generated run artifact was committed; that superseded campaign correctly emitted no final ledger while 822 rows lacked affirmative proof.
 - [x] (2026-07-14 20:18Z) Committed the exact-operation iteration as `b6b4c03`, pushed `agent/enforce-exact-pcode-adjudication`, and opened draft PR #1 against `main`. Generated `.ai/runs` evidence remains ignored and was not committed.
@@ -80,6 +89,12 @@ The observable outcome is a campaign below `.ai/runs/openwrt-more-binaries-v1` w
 
 - Observation: exact operation addresses are not sufficient when Ghidra emits several high-p-code operations for one machine instruction.
   Evidence: the frozen netifd CALL at `0x427033` also carries many INDIRECT effects and two PTRSUB helpers. The old address-only resolver selected a PTRSUB; the corrected resolver selects CALL from the candidate's declared operation kind. Across the campaign, exact opcode binding revoked 98 import-CAST and 41 INDIRECT certificates that had been attached to the wrong same-address operation.
+
+- Observation: C source regexes can manufacture an apparently affirmative array proof from syntax that is not a declaration.
+  Evidence: the v10 audit found a commented declaration, indexed assignments such as `id[id_len] = 0`, `return table[i]`, and aggregate fields such as `ptr->items[i]` in the old proof population. The hardened rule accepts only a local declaration in the exact function or a true file-scope array, checks every compile-time alternative, rejects member access without a base-object proof, and deliberately returned 12 earlier certificates to the residual queue.
+
+- Observation: several uninitialized-use clusters are call-effect modeling errors rather than reads, but the distinction is recoverable without candidate-specific suppressions.
+  Evidence: v11 independently checks ten formatted-input output rows and nine stat-family output rows by matching the exact runtime CALL arguments, pinned API declarations, and Ghidra's same-address INDIRECT annotation. Five network-parser rows additionally prove successful `inet_aton` or `inet_pton` before the exact assignment.
 
 - Observation: optimizer scalar replacement can turn one initialized source struct into dozens of decompiler locals without preserving a source line for the LTO clone.
   Evidence: 32 `FUN_00426e8e` findings occupy offsets 16 through 116 of one 120-byte `device_settings` object. The exact call to `device_merge_settings` dominates every flagged use, the callee starts with `memset(n, 0, sizeof(*n))`, and reference DWARF maps every byte range into the compiled object.
@@ -140,6 +155,10 @@ The observable outcome is a campaign below `.ai/runs/openwrt-more-binaries-v1` w
   Rationale: coverage is useful only when every certificate proves the frozen candidate's operation. The 139 revoked certificates return to the residual queue rather than being grandfathered or suppressed.
   Date/Author: 2026-07-14 / Codex
 
+- Decision: restrict generic array non-null proofs to exact-function local arrays, string literals, and true file-scope arrays; aggregate members require an independent proof of the base object.
+  Rationale: an array field has a non-null derived address only when its containing object is valid, and a source regex cannot infer that from the field declaration alone. Revoking weak prior certificates is preferable to retaining unearned coverage.
+  Date/Author: 2026-07-15 / Codex
+
 - Decision: prove scalar-replaced struct initialization by joining binary SSA, CFG dominance, reference symbols, pinned source, and compiled DWARF layout.
   Rationale: source text alone cannot show which decompiler local belongs to the source struct, while binary stack offsets alone cannot establish the callee's all-path initialization contract. The combined proof is general and independently recomputable.
   Date/Author: 2026-07-14 / Codex
@@ -162,9 +181,9 @@ The observable outcome is a campaign below `.ai/runs/openwrt-more-binaries-v1` w
 
 ## Outcomes & Retrospective
 
-The milestone is complete. Campaign v7 independently reproduces 308 certificates over the unchanged 976-candidate inventory: 307 affirmative `not_bug` decisions and one real source-proven bug. General rules resolved 49 rows beyond v3: 27 additional blobmsg table rows, 16 additional checked stat-family rows, seven output-address modeling errors, and the allocator bug, offset by two rows that moved from a later array-object rule to the more exact output-address rule. This is 31.6% checked coverage, up from 26.5%, with no candidate-ID exceptions.
+The full residual milestone remains active. Campaign v11 independently reproduces 397 certificates over the unchanged 976-candidate inventory: 396 affirmative `not_bug` decisions and the existing source-proven `bug`. It resolves 89 net rows beyond v7 while also withdrawing 12 weak array certificates. New reusable coverage includes 15 `parse_rtattr` rows, nine `getopt32` rows, six fixed-size receive rows, 16 additional named blobmsg rows, ten formatted-input call-effect rows, nine stat call-effect rows, five checked network-parse rows, and compiler-clone fan-out through existing guard and allocation rules. This is 40.7% checked coverage with no candidate-ID exceptions.
 
-No exhaustive ledger is emitted because 668 rows still lack affirmative proof. The bug is not a published vulnerability: it is an unchecked low-memory failure in a registered control-plane path, and the dynamic schema-v2 report gate remains unsatisfied. The main lessons are that source invariants need compiled object identity, stripped callback reachability can be recovered from registered data structures, and deterministic automation includes idempotent artifact state as well as deterministic decisions.
+No exhaustive ledger is emitted yet because 579 rows still lack affirmative evidence. The existing bug is not a published vulnerability: it is an unchecked low-memory failure in a registered control-plane path, and the dynamic schema-v2 report gate remains unsatisfied. The residual partition is 207 uninitialized uses, 130 stack overflows, 127 null dereferences, 62 path effects, and 53 rows across leaks, format strings, argument effects, spatial writes, file/command effects, and logging. The next implementation wave starts from those exact v11 clusters.
 
 ## Context and Orientation
 
@@ -172,7 +191,7 @@ Core code lives under `src/binary_agent`. `src/binary_agent/adjudication.py` cop
 
 A campaign context is the immutable evidence needed to evaluate one candidate: the frozen campaign manifest, candidate state, exact operation binding, shipped binary, and normalized Ghidra export. The normalized export can be hundreds of megabytes because it includes every recovered function and p-code operation. A campaign context index in this plan means a stage-local object that verifies each frozen file hash once, parses each shared JSON file once, indexes candidates by ID, and returns candidate-specific immutable views. It is not a global cache and must not survive across commands or conceal file mutations from a later independent check.
 
-The research artifacts live below `.ai/runs/openwrt-more-binaries-v1` and are intentionally ignored by Git. The shipped binaries come from the extracted OpenWrt root filesystem at `.ai/runs/firmware-campaigns/20260712-232226/images/openwrt-24.10.4-x86-64-rootfs/rootfs`. The normalized exports live in the SHA-keyed cache under `.ai/runs/firmware-campaigns/cache/decomp`. The current immutable campaign root is `.ai/runs/openwrt-more-binaries-v1/exact-machine-campaign-v7`, prepared from the unchanged v3 input hashes with current checker/generator hashes. Earlier `lifetime-fixed`, `exact-token-fixed`, `pcode-disambiguated`, v3, and superseded v4/v5/v6 campaigns remain reproducibility evidence and are not authoritative.
+The research artifacts live below `.ai/runs/openwrt-more-binaries-v1` and are intentionally ignored by Git. The shipped binaries come from the extracted OpenWrt root filesystem at `.ai/runs/firmware-campaigns/20260712-232226/images/openwrt-24.10.4-x86-64-rootfs/rootfs`. The normalized exports live in the SHA-keyed cache under `.ai/runs/firmware-campaigns/cache/decomp`. The current immutable campaign root is `.ai/runs/openwrt-more-binaries-v1/exact-machine-campaign-v11`, prepared from the unchanged v7 frozen inputs with current checker/generator hashes. Earlier campaigns, including failed preparation v8 and superseded v9/v10, remain immutable audit and reproducibility evidence.
 
 The selected package source commits are `bba95191ff2f22c9118a1ba1355b83afaa277ae3` for `rpcd` and `7901e66c5f273bceee8981bc8a0c8b0e60945f60` for `netifd`. BusyBox is OpenWrt's patched 1.36.1-r2 package, so its eventual reference mapping must cover both the upstream source and the exact OpenWrt patch/configuration set. The official SDK and OpenWrt buildroot already exist below `.ai/runs/openwrt-four-binary-adjudication-v1`; reuse verified bytes but copy or reference them only within `.ai/runs`.
 
@@ -184,9 +203,11 @@ Next, modify `run_autoprove` in `src/binary_agent/adjudication_autoprove.py` to 
 
 Add focused tests in `tests/test_adjudication_autoprove.py`. Instrument JSON loading or use a small fake campaign to assert that a multi-candidate same-binary batch parses its export once. Mutate a frozen input before index construction and require rejection. Ensure an unknown candidate and a candidate from another binary cannot receive the wrong state, binding, or export. Ensure a normal one-certificate `check_certificate` still notices post-run tampering. Record a benchmark from the 1,181-candidate campaign.
 
-The context optimization, source builds, corrected rediscovery, exact opcode binding, lifetime refutation, function-fingerprint mapping, blobmsg/stat-family contracts, callback recovery, and idempotent admission are complete. Continue from authoritative residual run `ed205d0fd2dc89b1` in `exact-machine-campaign-v7`. Cluster rows by binary, source-bound function, vulnerability class, and exact p-code opcode. The next largest complete semantic units are nine BusyBox uninitialized rows each in `FUN_0040a71c`, `FUN_00414f83`, and `FUN_00412b3e`, followed by eight in `FUN_00410f12`. Before adding a rule, recover the exact source function, compiled object, and all reaching paths, then require the proof to reject an unsafe counterexample fixture.
+The context optimization, source builds, corrected rediscovery, exact opcode binding, lifetime refutation, function-fingerprint mapping, callback recovery, first two residual waves, and idempotent admission are complete. Continue from authoritative residual run `332ce97eccabefeb` in `exact-machine-campaign-v11`. Cluster the remaining 579 rows by binary, source-bound function, vulnerability class, and exact p-code opcode. Before adding a rule, recover the exact source function, compiled object, base-object validity, and all reaching paths, then require the proof to reject an unsafe counterexample fixture.
 
 Extend deterministic rules only when a source structure gives a conservative reusable proof. Do not restore the removed Ghidra CAST/INDIRECT counts unless the candidate's own frozen p-code identity is CAST or INDIRECT. Use direct-model or coding-agent tiers only after provider credentials or tools exist, and keep their proposals untrusted until the existing verifier accepts exact evidence.
+
+The full-residual milestone proceeds in evidence fan-out order rather than candidate-ID order. First resolve repeated uninitialized-use structures because they account for 279 rows and expose reusable API-output semantics. Then process null dereferences, spatial writes, trust-boundary effects, leaks, and format strings by descending root-cause cluster size. Every rule must re-derive its source binding, dependency contract, path invariant, and exact operation from frozen artifacts; a deliberately unsafe source fixture must remain residual. After each tool change, prepare a new immutable sibling campaign from the unchanged v3 input hashes, run admission twice, compare artifact hashes, and run a fresh independent check. Continue until that check reports 976 certified decisions and zero residuals, then invoke the normal finalizer and report gate.
 
 Any target bug must still be checked at its exact operation and reachable entry surface. Any systematic false positive must become a general analyzer correction with a regression test, followed by rediscovery and a freshly prepared campaign when candidate semantics change. A certificate-rule improvement may rerun the same immutable campaign because it changes only derived evidence, not frozen inputs.
 
@@ -200,10 +221,10 @@ Run focused loader and certificate tests while implementing:
 
 Rerun and independently check the current immutable campaign:
 
-    PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m binary_agent.cli.run_adjudication_autoprove run --admit .ai/runs/openwrt-more-binaries-v1/exact-machine-campaign-v7
-    PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m binary_agent.cli.run_adjudication_autoprove check .ai/runs/openwrt-more-binaries-v1/exact-machine-campaign-v7
+    PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m binary_agent.cli.run_adjudication_autoprove run --admit .ai/runs/openwrt-more-binaries-v1/exact-machine-campaign-v11
+    PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m binary_agent.cli.run_adjudication_autoprove check .ai/runs/openwrt-more-binaries-v1/exact-machine-campaign-v11
 
-The command must complete in minutes rather than hours, and `candidate_count` must remain 976. The current expected result is 308 checked certificates, 668 residuals, 91 complete/admitted units, and run ID `ed205d0fd2dc89b1`; `check` must reproduce all certificate counts. A second unchanged `run --admit` must preserve exact summary, residual, certificate-tree, and review-tree hashes.
+The command must complete in minutes rather than hours, and `candidate_count` must remain 976. The current expected result is 397 checked certificates, 579 residuals, 123 complete/admitted units, and run ID `332ce97eccabefeb`; `check` must reproduce all certificate counts. A second unchanged `run --admit` must preserve exact summary, residual, certificate-tree, and review-tree hashes.
 
 After source mappings and semantic investigation are complete, run the full repository validation:
 
@@ -254,7 +275,7 @@ The superseded v3 source-backed exact-operation run showed:
     run time / peak RSS: 2:49.80 / 1,040,404 KiB
     independent check: 259 certificates, 717 residuals, 0:37.66
 
-The current v7 cluster-resolution run shows:
+The superseded v7 cluster-resolution run shows:
 
     frozen manifest SHA-256: 67c8745953428cab50d355741916529a504a6a15972ecee30741e1845978f128
     authoritative run ID: ed205d0fd2dc89b1
@@ -272,6 +293,22 @@ The current v7 cluster-resolution run shows:
     review-tree SHA-256: db9b8c0af74d5e808f2ea2820ab34a9a3df26addba155459eef4347ad5391017
     repeated run: all four hashes identical
     independent check: 308 certificates, 668 residuals
+
+The current v11 cluster-resolution run shows:
+
+    frozen manifest SHA-256: a706a781e8f2304468943ee54e35466e5c9e01e2b0cd41fee861c40b026c0e2f
+    authoritative run ID: 332ce97eccabefeb
+    checked decisions: 396 not_bug, 1 bug
+    residual candidates: 579
+    residuals by binary: busybox 415; netifd 126; rpcd 38
+    complete/admitted units: 123 / 123
+    decision counts by binary: busybox 146 not_bug; netifd 228 not_bug + 1 bug; rpcd 22 not_bug
+    summary SHA-256: 9efd2820d69999b0db0543b5c790cd0bb053b39ab1b4a462e807c68a1a5bc843
+    residual SHA-256: 3e062b9b14761abf0d93881a0515b42ac4fe94ec69dc862592bc4dbe92b190a0
+    certificate-tree SHA-256: 416f6587c7020f1524719af89db469740137785ab67447c77d1ce2d9d30e48a2
+    review-tree SHA-256: ebf494805f3b74289b5763b5982a110870f67c19b84fad2a14690ed052d023c0
+    repeated run: all five captured hashes identical
+    independent check: 397 certificates, 579 residuals, partition 976
 
 ## Interfaces and Dependencies
 
@@ -304,3 +341,7 @@ Revision note (2026-07-14 21:32Z): hardened idempotent admission to preserve sep
 Revision note (2026-07-14 22:19Z): corrected the Python 3.10 discovery syntax exposed by draft-PR CI, superseded v6 with current-tool-hash campaign v7, and recorded its byte-identical rerun, fresh independent 308/668 check, and repository-wide validation.
 
 Revision note (2026-07-14 22:23Z): recorded successful Python 3.10 push and pull-request workflows, the independent pushed-state and v7 campaign audit, and completion of the selected-cluster milestone on draft PR #1.
+
+Revision note (2026-07-14 23:09Z): expanded the active plan from the completed 35-row cluster iteration to the user-requested full 668-row residual objective. Recorded the exact v7 partition, the first four source-bound BusyBox units, the zero-residual acceptance condition, and the immutable sibling-campaign loop required after every tool change.
+
+Revision note (2026-07-15 00:45Z): completed two reusable residual waves, hardened source declaration and array-object proof parsing, withdrew 12 weak historical certificates, and made campaign v11 authoritative at 397 checked decisions and 579 residuals after byte-identical admitted reruns and a fresh independent check.
